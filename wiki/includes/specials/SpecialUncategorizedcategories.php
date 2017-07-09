@@ -27,22 +27,21 @@
  * @ingroup SpecialPage
  */
 class UncategorizedCategoriesPage extends UncategorizedPagesPage {
-	function __construct() {
+	function __construct( $name = 'Uncategorizedcategories' ) {
+		parent::__construct( $name );
 		$this->requestedNamespace = NS_CATEGORY;
 	}
 
-	function getName() {
-		return "Uncategorizedcategories";
+	/**
+	 * Formats the result
+	 * @param Skin $skin The current skin
+	 * @param object $result The query result
+	 * @return string The category link
+	 */
+	function formatResult( $skin, $result ) {
+		$title = Title::makeTitle( NS_CATEGORY, $result->title );
+		$text = $title->getText();
+
+		return Linker::linkKnown( $title, htmlspecialchars( $text ) );
 	}
-}
-
-/**
- * constructor
- */
-function wfSpecialUncategorizedcategories() {
-	list( $limit, $offset ) = wfCheckLimits();
-
-	$lpp = new UncategorizedCategoriesPage();
-
-	return $lpp->doQuery( $offset, $limit );
 }

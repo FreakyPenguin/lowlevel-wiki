@@ -18,65 +18,72 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  * http://www.gnu.org/copyleft/gpl.html
  *
+ * @file
  * @ingroup Maintenance
  */
 
-require_once( dirname( __FILE__ ) . '/Maintenance.php' );
+require_once __DIR__ . '/Maintenance.php';
 
+/**
+ * Maintenance script that deletes all pages in the MediaWiki namespace
+ * which were last edited by "MediaWiki default".
+ *
+ * @ingroup Maintenance
+ */
 class DeleteDefaultMessages extends Maintenance {
 	public function __construct() {
 		parent::__construct();
-		$this->mDescription = "Deletes all pages in the MediaWiki namespace" .
-								" which were last edited by \"MediaWiki default\"";
+		$this->addDescription( 'Deletes all pages in the MediaWiki namespace' .
+			' which were last edited by "MediaWiki default"' );
 	}
 
 	public function execute() {
-
-		$user = 'MediaWiki default';
-		$reason = 'No longer required';
+		global $wgUser;
 
 		$this->output( "Checking existence of old default messages..." );
-		$dbr = wfGetDB( DB_SLAVE );
-		$res = $dbr->select( array( 'page', 'revision' ),
-			array( 'page_namespace', 'page_title' ),
-			array(
+		$dbr = $this->getDB( DB_REPLICA );
+		$res = $dbr->select( [ 'page', 'revision' ],
+			[ 'page_namespace', 'page_title' ],
+			[
 				'page_namespace' => NS_MEDIAWIKI,
 				'page_latest=rev_id',
 				'rev_user_text' => 'MediaWiki default',
-			)
+			]
 		);
 
-		if( $dbr->numRows( $res ) == 0 ) {
+		if ( $dbr->numRows( $res ) == 0 ) {
 			# No more messages left
 			$this->output( "done.\n" );
+
 			return;
 		}
 
 		# Deletions will be made by $user temporarly added to the bot group
 		# in order to hide it in RecentChanges.
-		global $wgUser;
-		$wgUser = User::newFromName( $user );
-		$wgUser->addGroup( 'bot' );
+		$user = User::newFromName( 'MediaWiki default' );
+		if ( !$user ) {
+			$this->error( "Invalid username", true );
+		}
+		$user->addGroup( 'bot' );
+		$wgUser = $user;
 
 		# Handle deletion
 		$this->output( "\n...deleting old default messages (this may take a long time!)...", 'msg' );
-		$dbw = wfGetDB( DB_MASTER );
+		$dbw = $this->getDB( DB_MASTER );
 
 		foreach ( $res as $row ) {
-			if ( function_exists( 'wfWaitForSlaves' ) ) {
-				wfWaitForSlaves( 5 );
-			}
+			wfWaitForSlaves();
 			$dbw->ping();
 			$title = Title::makeTitle( $row->page_namespace, $row->page_title );
-			$article = new Article( $title );
-			$dbw->begin();
-			$article->doDeleteArticle( $reason );
-			$dbw->commit();
+			$page = WikiPage::factory( $title );
+			$error = ''; // Passed by ref
+			// FIXME: Deletion failures should be reported, not silently ignored.
+			$page->doDeleteArticle( 'No longer required', false, 0, true, $error, $user );
 		}
 
-		$this->output( 'done!', 'msg' );
+		$this->output( "done!\n", 'msg' );
 	}
 }
 
 $maintClass = "DeleteDefaultMessages";
-require_once( RUN_MAINTENANCE_IF_MAIN );
+require_once RUN_MAINTENANCE_IF_MAIN;

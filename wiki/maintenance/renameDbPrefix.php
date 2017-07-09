@@ -1,5 +1,6 @@
 <?php
 /**
+ * Change the prefix of database tables.
  * Run this script to after changing $wgDBprefix on a wiki.
  * The wiki will have to get downtime to do this correctly.
  *
@@ -18,11 +19,17 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  * http://www.gnu.org/copyleft/gpl.html
  *
+ * @file
  * @ingroup Maintenance
  */
 
-require_once( dirname( __FILE__ ) . '/Maintenance.php' );
+require_once __DIR__ . '/Maintenance.php';
 
+/**
+ * Maintenance script that changes the prefix of database tables.
+ *
+ * @ingroup Maintenance
+ */
 class RenameDbPrefix extends Maintenance {
 	public function __construct() {
 		parent::__construct();
@@ -64,7 +71,7 @@ class RenameDbPrefix extends Maintenance {
 		$this->output( "Renaming DB prefix for tables of $wgDBname from '$old' to '$new'\n" );
 		$count = 0;
 
-		$dbw = wfGetDB( DB_MASTER );
+		$dbw = $this->getDB( DB_MASTER );
 		$res = $dbw->query( "SHOW TABLES " . $dbw->buildLike( $old, $dbw->anyString() ) );
 		foreach ( $res as $row ) {
 			// XXX: odd syntax. MySQL outputs an oddly cased "Tables of X"
@@ -84,4 +91,4 @@ class RenameDbPrefix extends Maintenance {
 }
 
 $maintClass = "RenameDbPrefix";
-require_once( RUN_MAINTENANCE_IF_MAIN );
+require_once RUN_MAINTENANCE_IF_MAIN;

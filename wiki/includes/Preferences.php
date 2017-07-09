@@ -1,5 +1,28 @@
 <?php
 /**
+ * Form to edit user preferences.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * http://www.gnu.org/copyleft/gpl.html
+ *
+ * @file
+ */
+use MediaWiki\Auth\AuthManager;
+use MediaWiki\Auth\PasswordAuthenticationRequest;
+
+/**
  * We're now using the HTMLForm object with some customisation to generate the
  * Preferences form. This object handles generic submission, CSRF protection,
  * layout and other logic in a reusable manner. We subclass it as a PreferencesForm
@@ -24,51 +47,93 @@
  * Once fields have been retrieved and validated, submission logic is handed
  * over to the tryUISubmit static method of this class.
  */
-
 class Preferences {
-	static $defaultPreferences = null;
-	static $saveFilters = array(
-			'timecorrection' => array( 'Preferences', 'filterTimezoneInput' ),
-			'cols' => array( 'Preferences', 'filterIntval' ),
-			'rows' => array( 'Preferences', 'filterIntval' ),
-			'rclimit' => array( 'Preferences', 'filterIntval' ),
-			'wllimit' => array( 'Preferences', 'filterIntval' ),
-			'searchlimit' => array( 'Preferences', 'filterIntval' ),
-	);
+	/** @var array */
+	protected static $defaultPreferences = null;
 
-	static function getPreferences( $user ) {
-		if ( self::$defaultPreferences )
+	/** @var array */
+	protected static $saveFilters = [
+		'timecorrection' => [ 'Preferences', 'filterTimezoneInput' ],
+		'cols' => [ 'Preferences', 'filterIntval' ],
+		'rows' => [ 'Preferences', 'filterIntval' ],
+		'rclimit' => [ 'Preferences', 'filterIntval' ],
+		'wllimit' => [ 'Preferences', 'filterIntval' ],
+		'searchlimit' => [ 'Preferences', 'filterIntval' ],
+	];
+
+	// Stuff that shouldn't be saved as a preference.
+	private static $saveBlacklist = [
+		'realname',
+		'emailaddress',
+	];
+
+	/**
+	 * @return array
+	 */
+	static function getSaveBlacklist() {
+		return self::$saveBlacklist;
+	}
+
+	/**
+	 * @throws MWException
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @return array|null
+	 */
+	static function getPreferences( $user, IContextSource $context ) {
+		if ( self::$defaultPreferences ) {
 			return self::$defaultPreferences;
+		}
 
-		$defaultPreferences = array();
+		$defaultPreferences = [];
 
-		self::profilePreferences( $user, $defaultPreferences );
-		self::skinPreferences( $user, $defaultPreferences );
-		self::filesPreferences( $user, $defaultPreferences );
-		self::mathPreferences( $user, $defaultPreferences );
-		self::datetimePreferences( $user, $defaultPreferences );
-		self::renderingPreferences( $user, $defaultPreferences );
-		self::editingPreferences( $user, $defaultPreferences );
-		self::rcPreferences( $user, $defaultPreferences );
-		self::watchlistPreferences( $user, $defaultPreferences );
-		self::searchPreferences( $user, $defaultPreferences );
-		self::miscPreferences( $user, $defaultPreferences );
+		self::profilePreferences( $user, $context, $defaultPreferences );
+		self::skinPreferences( $user, $context, $defaultPreferences );
+		self::datetimePreferences( $user, $context, $defaultPreferences );
+		self::filesPreferences( $user, $context, $defaultPreferences );
+		self::renderingPreferences( $user, $context, $defaultPreferences );
+		self::editingPreferences( $user, $context, $defaultPreferences );
+		self::rcPreferences( $user, $context, $defaultPreferences );
+		self::watchlistPreferences( $user, $context, $defaultPreferences );
+		self::searchPreferences( $user, $context, $defaultPreferences );
+		self::miscPreferences( $user, $context, $defaultPreferences );
 
-		wfRunHooks( 'GetPreferences', array( $user, &$defaultPreferences ) );
+		Hooks::run( 'GetPreferences', [ $user, &$defaultPreferences ] );
 
-		## Remove preferences that wikis don't want to use
-		global $wgHiddenPrefs;
-		foreach ( $wgHiddenPrefs as $pref ) {
+		self::loadPreferenceValues( $user, $context, $defaultPreferences );
+		self::$defaultPreferences = $defaultPreferences;
+		return $defaultPreferences;
+	}
+
+	/**
+	 * Loads existing values for a given array of preferences
+	 * @throws MWException
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param array $defaultPreferences Array to load values for
+	 * @return array|null
+	 */
+	static function loadPreferenceValues( $user, $context, &$defaultPreferences ) {
+		# # Remove preferences that wikis don't want to use
+		foreach ( $context->getConfig()->get( 'HiddenPrefs' ) as $pref ) {
 			if ( isset( $defaultPreferences[$pref] ) ) {
 				unset( $defaultPreferences[$pref] );
 			}
 		}
 
-		## Prod in defaults from the user
+		# # Make sure that form fields have their parent set. See bug 41337.
+		$dummyForm = new HTMLForm( [], $context );
+
+		$disable = !$user->isAllowed( 'editmyoptions' );
+
+		$defaultOptions = User::getDefaultOptions();
+		# # Prod in defaults from the user
 		foreach ( $defaultPreferences as $name => &$info ) {
 			$prefFromUser = self::getOptionFromUser( $name, $info, $user );
-			$field = HTMLForm::loadInputFromParameters( $name, $info ); // For validation
-			$defaultOptions = User::getDefaultOptions();
+			if ( $disable && !in_array( $name, self::$saveBlacklist ) ) {
+				$info['disabled'] = 'disabled';
+			}
+			$field = HTMLForm::loadInputFromParameters( $name, $info, $dummyForm ); // For validation
 			$globalDefault = isset( $defaultOptions[$name] )
 				? $defaultOptions[$name]
 				: null;
@@ -78,30 +143,35 @@ class Preferences {
 				// Already set, no problem
 				continue;
 			} elseif ( !is_null( $prefFromUser ) && // Make sure we're not just pulling nothing
-					$field->validate( $prefFromUser, $user->mOptions ) === true ) {
+					$field->validate( $prefFromUser, $user->getOptions() ) === true ) {
 				$info['default'] = $prefFromUser;
-			} elseif ( $field->validate( $globalDefault, $user->mOptions ) === true ) {
+			} elseif ( $field->validate( $globalDefault, $user->getOptions() ) === true ) {
 				$info['default'] = $globalDefault;
 			} else {
 				throw new MWException( "Global default '$globalDefault' is invalid for field $name" );
 			}
 		}
 
-		self::$defaultPreferences = $defaultPreferences;
-
 		return $defaultPreferences;
 	}
 
-	// Pull option from a user account. Handles stuff like array-type preferences.
+	/**
+	 * Pull option from a user account. Handles stuff like array-type preferences.
+	 *
+	 * @param string $name
+	 * @param array $info
+	 * @param User $user
+	 * @return array|string
+	 */
 	static function getOptionFromUser( $name, $info, $user ) {
 		$val = $user->getOption( $name );
 
-		// Handling for array-type preferences
+		// Handling for multiselect preferences
 		if ( ( isset( $info['type'] ) && $info['type'] == 'multiselect' ) ||
 				( isset( $info['class'] ) && $info['class'] == 'HTMLMultiSelectField' ) ) {
 			$options = HTMLFormField::flattenOptions( $info['options'] );
 			$prefix = isset( $info['prefix'] ) ? $info['prefix'] : $name;
-			$val = array();
+			$val = [];
 
 			foreach ( $options as $value ) {
 				if ( $user->getOption( "$prefix$value" ) ) {
@@ -110,953 +180,1004 @@ class Preferences {
 			}
 		}
 
+		// Handling for checkmatrix preferences
+		if ( ( isset( $info['type'] ) && $info['type'] == 'checkmatrix' ) ||
+				( isset( $info['class'] ) && $info['class'] == 'HTMLCheckMatrix' ) ) {
+			$columns = HTMLFormField::flattenOptions( $info['columns'] );
+			$rows = HTMLFormField::flattenOptions( $info['rows'] );
+			$prefix = isset( $info['prefix'] ) ? $info['prefix'] : $name;
+			$val = [];
+
+			foreach ( $columns as $column ) {
+				foreach ( $rows as $row ) {
+					if ( $user->getOption( "$prefix$column-$row" ) ) {
+						$val[] = "$column-$row";
+					}
+				}
+			}
+		}
+
 		return $val;
 	}
 
-	static function profilePreferences( $user, &$defaultPreferences ) {
-		global $wgLang, $wgUser;
-		## User info #####################################
-		// Information panel
-		$defaultPreferences['username'] = array(
-			'type' => 'info',
-			'label-message' => 'username',
-			'default' => $user->getName(),
-			'section' => 'personal/info',
-		);
+	/**
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param array $defaultPreferences
+	 * @return void
+	 */
+	static function profilePreferences( $user, IContextSource $context, &$defaultPreferences ) {
+		global $wgContLang, $wgParser;
 
-		$defaultPreferences['userid'] = array(
+		$authManager = AuthManager::singleton();
+		$config = $context->getConfig();
+		// retrieving user name for GENDER and misc.
+		$userName = $user->getName();
+
+		# # User info #####################################
+		// Information panel
+		$defaultPreferences['username'] = [
 			'type' => 'info',
-			'label-message' => 'uid',
-			'default' => $user->getId(),
+			'label-message' => [ 'username', $userName ],
+			'default' => $userName,
 			'section' => 'personal/info',
-		);
+		];
 
 		# Get groups to which the user belongs
 		$userEffectiveGroups = $user->getEffectiveGroups();
-		$userGroups = $userMembers = array();
+		$userGroups = $userMembers = [];
 		foreach ( $userEffectiveGroups as $ueg ) {
 			if ( $ueg == '*' ) {
 				// Skip the default * group, seems useless here
 				continue;
 			}
-			$groupName  = User::getGroupName( $ueg );
+			$groupName = User::getGroupName( $ueg );
 			$userGroups[] = User::makeGroupLinkHTML( $ueg, $groupName );
 
-			$memberName = User::getGroupMember( $ueg );
+			$memberName = User::getGroupMember( $ueg, $userName );
 			$userMembers[] = User::makeGroupLinkHTML( $ueg, $memberName );
 		}
 		asort( $userGroups );
 		asort( $userMembers );
 
-		$defaultPreferences['usergroups'] = array(
+		$lang = $context->getLanguage();
+
+		$defaultPreferences['usergroups'] = [
 			'type' => 'info',
-			'label' => wfMsgExt(
-				'prefs-memberingroups', 'parseinline',
-				$wgLang->formatNum( count( $userGroups ) )
-			),
-			'default' => wfMsgExt(
-				'prefs-memberingroups-type', array(),
-				$wgLang->commaList( $userGroups ),
-				$wgLang->commaList( $userMembers )
-			),
+			'label' => $context->msg( 'prefs-memberingroups' )->numParams(
+				count( $userGroups ) )->params( $userName )->parse(),
+			'default' => $context->msg( 'prefs-memberingroups-type' )
+				->rawParams( $lang->commaList( $userGroups ), $lang->commaList( $userMembers ) )
+				->escaped(),
 			'raw' => true,
 			'section' => 'personal/info',
-		);
+		];
 
-		$defaultPreferences['editcount'] = array(
+		$editCount = Linker::link( SpecialPage::getTitleFor( "Contributions", $userName ),
+			$lang->formatNum( $user->getEditCount() ) );
+
+		$defaultPreferences['editcount'] = [
 			'type' => 'info',
+			'raw' => true,
 			'label-message' => 'prefs-edits',
-			'default' => $wgLang->formatNum( $user->getEditCount() ),
+			'default' => $editCount,
 			'section' => 'personal/info',
-		);
+		];
 
 		if ( $user->getRegistration() ) {
-			$defaultPreferences['registrationdate'] = array(
+			$displayUser = $context->getUser();
+			$userRegistration = $user->getRegistration();
+			$defaultPreferences['registrationdate'] = [
 				'type' => 'info',
 				'label-message' => 'prefs-registration',
-				'default' => wfMsgExt(
-					'prefs-registration-date-time', 'parsemag',
-					$wgLang->timeanddate( $user->getRegistration(), true ),
-					$wgLang->date( $user->getRegistration(), true ),
-					$wgLang->time( $user->getRegistration(), true )
-				),
+				'default' => $context->msg(
+					'prefs-registration-date-time',
+					$lang->userTimeAndDate( $userRegistration, $displayUser ),
+					$lang->userDate( $userRegistration, $displayUser ),
+					$lang->userTime( $userRegistration, $displayUser )
+				)->parse(),
 				'section' => 'personal/info',
-			);
+			];
 		}
 
+		$canViewPrivateInfo = $user->isAllowed( 'viewmyprivateinfo' );
+		$canEditPrivateInfo = $user->isAllowed( 'editmyprivateinfo' );
+
 		// Actually changeable stuff
-		global $wgAuth;
-		$defaultPreferences['realname'] = array(
-			'type' => $wgAuth->allowPropChange( 'realname' ) ? 'text' : 'info',
+		$defaultPreferences['realname'] = [
+			// (not really "private", but still shouldn't be edited without permission)
+			'type' => $canEditPrivateInfo && $authManager->allowsPropertyChange( 'realname' )
+				? 'text' : 'info',
 			'default' => $user->getRealName(),
 			'section' => 'personal/info',
 			'label-message' => 'yourrealname',
 			'help-message' => 'prefs-help-realname',
-		);
+		];
 
-		$defaultPreferences['gender'] = array(
-			'type' => 'select',
-			'section' => 'personal/info',
-			'options' => array(
-				wfMsg( 'gender-male' ) => 'male',
-				wfMsg( 'gender-female' ) => 'female',
-				wfMsg( 'gender-unknown' ) => 'unknown',
-			),
-			'label-message' => 'yourgender',
-			'help-message' => 'prefs-help-gender',
-		);
+		if ( $canEditPrivateInfo && $authManager->allowsAuthenticationDataChange(
+			new PasswordAuthenticationRequest(), false )->isGood()
+		) {
+			$link = Linker::link( SpecialPage::getTitleFor( 'ChangePassword' ),
+				$context->msg( 'prefs-resetpass' )->escaped(), [],
+				[ 'returnto' => SpecialPage::getTitleFor( 'Preferences' )->getPrefixedText() ] );
 
-		if ( $wgAuth->allowPasswordChange() ) {
-			$link = $wgUser->getSkin()->link( SpecialPage::getTitleFor( 'Resetpass' ),
-				wfMsgHtml( 'prefs-resetpass' ), array(),
-				array( 'returnto' => SpecialPage::getTitleFor( 'Preferences' ) ) );
-
-			$defaultPreferences['password'] = array(
+			$defaultPreferences['password'] = [
 				'type' => 'info',
 				'raw' => true,
 				'default' => $link,
 				'label-message' => 'yourpassword',
 				'section' => 'personal/info',
-			);
+			];
 		}
-		global $wgCookieExpiration;
-		if ( $wgCookieExpiration > 0 ) {
-			$defaultPreferences['rememberpassword'] = array(
+		// Only show prefershttps if secure login is turned on
+		if ( $config->get( 'SecureLogin' ) && wfCanIPUseHTTPS( $context->getRequest()->getIP() ) ) {
+			$defaultPreferences['prefershttps'] = [
 				'type' => 'toggle',
-				'label' => wfMsgExt(
-					'tog-rememberpassword',
-					array( 'parsemag' ),
-					$wgLang->formatNum( ceil( $wgCookieExpiration / ( 3600 * 24 ) ) )
-					),
-				'section' => 'personal/info',
-			);
+				'label-message' => 'tog-prefershttps',
+				'help-message' => 'prefs-help-prefershttps',
+				'section' => 'personal/info'
+			];
 		}
 
 		// Language
-		global $wgLanguageCode;
-		$languages = Language::getLanguageNames( false );
-		if ( !array_key_exists( $wgLanguageCode, $languages ) ) {
-			$languages[$wgLanguageCode] = $wgLanguageCode;
+		$languages = Language::fetchLanguageNames( null, 'mw' );
+		$languageCode = $config->get( 'LanguageCode' );
+		if ( !array_key_exists( $languageCode, $languages ) ) {
+			$languages[$languageCode] = $languageCode;
 		}
 		ksort( $languages );
 
-		$options = array();
+		$options = [];
 		foreach ( $languages as $code => $name ) {
 			$display = wfBCP47( $code ) . ' - ' . $name;
 			$options[$display] = $code;
 		}
-		$defaultPreferences['language'] = array(
+		$defaultPreferences['language'] = [
 			'type' => 'select',
 			'section' => 'personal/i18n',
 			'options' => $options,
 			'label-message' => 'yourlanguage',
-		);
+		];
 
-		global $wgContLang, $wgDisableLangConversion;
-		global $wgDisableTitleConversion;
-		/* see if there are multiple language variants to choose from*/
-		$variantArray = array();
-		if ( !$wgDisableLangConversion ) {
-			$variants = $wgContLang->getVariants();
+		$defaultPreferences['gender'] = [
+			'type' => 'radio',
+			'section' => 'personal/i18n',
+			'options' => [
+				$context->msg( 'parentheses' )
+					->params( $context->msg( 'gender-unknown' )->plain() )
+					->escaped() => 'unknown',
+				$context->msg( 'gender-female' )->escaped() => 'female',
+				$context->msg( 'gender-male' )->escaped() => 'male',
+			],
+			'label-message' => 'yourgender',
+			'help-message' => 'prefs-help-gender',
+		];
 
-			$languages = Language::getLanguageNames( true );
-			foreach ( $variants as $v ) {
-				$v = str_replace( '_', '-', strtolower( $v ) );
-				if ( array_key_exists( $v, $languages ) ) {
-					// If it doesn't have a name, we'll pretend it doesn't exist
-					$variantArray[$v] = $languages[$v];
+		// see if there are multiple language variants to choose from
+		if ( !$config->get( 'DisableLangConversion' ) ) {
+			foreach ( LanguageConverter::$languagesWithVariants as $langCode ) {
+				if ( $langCode == $wgContLang->getCode() ) {
+					$variants = $wgContLang->getVariants();
+
+					if ( count( $variants ) <= 1 ) {
+						continue;
+					}
+
+					$variantArray = [];
+					foreach ( $variants as $v ) {
+						$v = str_replace( '_', '-', strtolower( $v ) );
+						$variantArray[$v] = $lang->getVariantname( $v, false );
+					}
+
+					$options = [];
+					foreach ( $variantArray as $code => $name ) {
+						$display = wfBCP47( $code ) . ' - ' . $name;
+						$options[$display] = $code;
+					}
+
+					$defaultPreferences['variant'] = [
+						'label-message' => 'yourvariant',
+						'type' => 'select',
+						'options' => $options,
+						'section' => 'personal/i18n',
+						'help-message' => 'prefs-help-variant',
+					];
+				} else {
+					$defaultPreferences["variant-$langCode"] = [
+						'type' => 'api',
+					];
 				}
 			}
-
-			$options = array();
-			foreach ( $variantArray as $code => $name ) {
-				$display = wfBCP47( $code ) . ' - ' . $name;
-				$options[$display] = $code;
-			}
-
-			if ( count( $variantArray ) > 1 ) {
-				$defaultPreferences['variant'] = array(
-					'label-message' => 'yourvariant',
-					'type' => 'select',
-					'options' => $options,
-					'section' => 'personal/i18n',
-				);
-			}
 		}
 
-		if ( count( $variantArray ) > 1 && !$wgDisableLangConversion && !$wgDisableTitleConversion ) {
-			$defaultPreferences['noconvertlink'] =
-					array(
+		// Stuff from Language::getExtraUserToggles()
+		// FIXME is this dead code? $extraUserToggles doesn't seem to be defined for any language
+		$toggles = $wgContLang->getExtraUserToggles();
+
+		foreach ( $toggles as $toggle ) {
+			$defaultPreferences[$toggle] = [
 				'type' => 'toggle',
 				'section' => 'personal/i18n',
-				'label-message' => 'tog-noconvertlink',
-			);
+				'label-message' => "tog-$toggle",
+			];
 		}
 
-		global $wgMaxSigChars, $wgOut, $wgParser;
-
 		// show a preview of the old signature first
-		$oldsigWikiText = $wgParser->preSaveTransform( "~~~", new Title , $user, new ParserOptions );
-		$oldsigHTML = $wgOut->parseInline( $oldsigWikiText );
-		$defaultPreferences['oldsig'] = array(
+		$oldsigWikiText = $wgParser->preSaveTransform(
+			'~~~',
+			$context->getTitle(),
+			$user,
+			ParserOptions::newFromContext( $context )
+		);
+		$oldsigHTML = $context->getOutput()->parseInline( $oldsigWikiText, true, true );
+		$defaultPreferences['oldsig'] = [
 			'type' => 'info',
 			'raw' => true,
 			'label-message' => 'tog-oldsig',
 			'default' => $oldsigHTML,
 			'section' => 'personal/signature',
-		);
-		$defaultPreferences['nickname'] = array(
-			'type' => $wgAuth->allowPropChange( 'nickname' ) ? 'text' : 'info',
-			'maxlength' => $wgMaxSigChars,
+		];
+		$defaultPreferences['nickname'] = [
+			'type' => $authManager->allowsPropertyChange( 'nickname' ) ? 'text' : 'info',
+			'maxlength' => $config->get( 'MaxSigChars' ),
 			'label-message' => 'yournick',
-			'validation-callback' => array( 'Preferences', 'validateSignature' ),
+			'validation-callback' => [ 'Preferences', 'validateSignature' ],
 			'section' => 'personal/signature',
-			'filter-callback' => array( 'Preferences', 'cleanSignature' ),
-		);
-		$defaultPreferences['fancysig'] = array(
+			'filter-callback' => [ 'Preferences', 'cleanSignature' ],
+		];
+		$defaultPreferences['fancysig'] = [
 			'type' => 'toggle',
 			'label-message' => 'tog-fancysig',
-			'help-message' => 'prefs-help-signature', // show general help about signature at the bottom of the section
+			// show general help about signature at the bottom of the section
+			'help-message' => 'prefs-help-signature',
 			'section' => 'personal/signature'
-		);
+		];
 
-		## Email stuff
+		# # Email stuff
 
-		global $wgEnableEmail;
-		if ( $wgEnableEmail ) {
-			global $wgEmailConfirmToEdit;
+		if ( $config->get( 'EnableEmail' ) ) {
+			if ( $canViewPrivateInfo ) {
+				$helpMessages[] = $config->get( 'EmailConfirmToEdit' )
+						? 'prefs-help-email-required'
+						: 'prefs-help-email';
 
-			$defaultPreferences['emailaddress'] = array(
-				'type' => $wgAuth->allowPropChange( 'emailaddress' ) ? 'email' : 'info',
-				'default' => $user->getEmail(),
-				'section' => 'personal/email',
-				'label-message' => 'youremail',
-				'help-message' => $wgEmailConfirmToEdit
-					? 'prefs-help-email-required'
-					: 'prefs-help-email',
-				'validation-callback' => array( 'Preferences', 'validateEmail' ),
-			);
+				if ( $config->get( 'EnableUserEmail' ) ) {
+					// additional messages when users can send email to each other
+					$helpMessages[] = 'prefs-help-email-others';
+				}
 
-			global $wgEnableUserEmail, $wgEmailAuthentication;
+				$emailAddress = $user->getEmail() ? htmlspecialchars( $user->getEmail() ) : '';
+				if ( $canEditPrivateInfo && $authManager->allowsPropertyChange( 'emailaddress' ) ) {
+					$link = Linker::link(
+						SpecialPage::getTitleFor( 'ChangeEmail' ),
+						$context->msg( $user->getEmail() ? 'prefs-changeemail' : 'prefs-setemail' )->escaped(),
+						[],
+						[ 'returnto' => SpecialPage::getTitleFor( 'Preferences' )->getPrefixedText() ] );
+
+					$emailAddress .= $emailAddress == '' ? $link : (
+						$context->msg( 'word-separator' )->escaped()
+						. $context->msg( 'parentheses' )->rawParams( $link )->escaped()
+					);
+				}
+
+				$defaultPreferences['emailaddress'] = [
+					'type' => 'info',
+					'raw' => true,
+					'default' => $emailAddress,
+					'label-message' => 'youremail',
+					'section' => 'personal/email',
+					'help-messages' => $helpMessages,
+					# 'cssclass' chosen below
+				];
+			}
 
 			$disableEmailPrefs = false;
 
-			if ( $wgEmailAuthentication ) {
+			if ( $config->get( 'EmailAuthentication' ) ) {
+				$emailauthenticationclass = 'mw-email-not-authenticated';
 				if ( $user->getEmail() ) {
 					if ( $user->getEmailAuthenticationTimestamp() ) {
 						// date and time are separate parameters to facilitate localisation.
 						// $time is kept for backward compat reasons.
 						// 'emailauthenticated' is also used in SpecialConfirmemail.php
-						$time = $wgLang->timeAndDate( $user->getEmailAuthenticationTimestamp(), true );
-						$d = $wgLang->date( $user->getEmailAuthenticationTimestamp(), true );
-						$t = $wgLang->time( $user->getEmailAuthenticationTimestamp(), true );
-						$emailauthenticated = wfMsgExt(
-							'emailauthenticated', 'parseinline',
-							array( $time, $d, $t )
-						) . '<br />';
+						$displayUser = $context->getUser();
+						$emailTimestamp = $user->getEmailAuthenticationTimestamp();
+						$time = $lang->userTimeAndDate( $emailTimestamp, $displayUser );
+						$d = $lang->userDate( $emailTimestamp, $displayUser );
+						$t = $lang->userTime( $emailTimestamp, $displayUser );
+						$emailauthenticated = $context->msg( 'emailauthenticated',
+							$time, $d, $t )->parse() . '<br />';
 						$disableEmailPrefs = false;
+						$emailauthenticationclass = 'mw-email-authenticated';
 					} else {
 						$disableEmailPrefs = true;
-						$skin = $wgUser->getSkin();
-						$emailauthenticated = wfMsgExt( 'emailnotauthenticated', 'parseinline' ) . '<br />' .
-							$skin->link(
+						$emailauthenticated = $context->msg( 'emailnotauthenticated' )->parse() . '<br />' .
+							Linker::linkKnown(
 								SpecialPage::getTitleFor( 'Confirmemail' ),
-								wfMsg( 'emailconfirmlink' ),
-								array(),
-								array(),
-								array( 'known', 'noclasses' )
+								$context->msg( 'emailconfirmlink' )->escaped()
 							) . '<br />';
+						$emailauthenticationclass = "mw-email-not-authenticated";
 					}
 				} else {
 					$disableEmailPrefs = true;
-					$emailauthenticated = wfMsgHtml( 'noemailprefs' );
+					$emailauthenticated = $context->msg( 'noemailprefs' )->escaped();
+					$emailauthenticationclass = 'mw-email-none';
 				}
 
-				$defaultPreferences['emailauthentication'] = array(
-					'type' => 'info',
-					'raw' => true,
-					'section' => 'personal/email',
-					'label-message' => 'prefs-emailconfirm-label',
-					'default' => $emailauthenticated,
-				);
-
+				if ( $canViewPrivateInfo ) {
+					$defaultPreferences['emailauthentication'] = [
+						'type' => 'info',
+						'raw' => true,
+						'section' => 'personal/email',
+						'label-message' => 'prefs-emailconfirm-label',
+						'default' => $emailauthenticated,
+						# Apply the same CSS class used on the input to the message:
+						'cssclass' => $emailauthenticationclass,
+					];
+				}
 			}
 
-			if ( $wgEnableUserEmail && $user->isAllowed( 'sendemail' ) ) {
-				$defaultPreferences['disablemail'] = array(
+			if ( $config->get( 'EnableUserEmail' ) && $user->isAllowed( 'sendemail' ) ) {
+				$defaultPreferences['disablemail'] = [
 					'type' => 'toggle',
 					'invert' => true,
 					'section' => 'personal/email',
 					'label-message' => 'allowemail',
 					'disabled' => $disableEmailPrefs,
-				);
-				$defaultPreferences['ccmeonemails'] = array(
+				];
+				$defaultPreferences['ccmeonemails'] = [
 					'type' => 'toggle',
 					'section' => 'personal/email',
 					'label-message' => 'tog-ccmeonemails',
 					'disabled' => $disableEmailPrefs,
-				);
+				];
 			}
 
-			global $wgEnotifWatchlist;
-			if ( $wgEnotifWatchlist ) {
-				$defaultPreferences['enotifwatchlistpages'] = array(
+			if ( $config->get( 'EnotifWatchlist' ) ) {
+				$defaultPreferences['enotifwatchlistpages'] = [
 					'type' => 'toggle',
 					'section' => 'personal/email',
 					'label-message' => 'tog-enotifwatchlistpages',
 					'disabled' => $disableEmailPrefs,
-				);
+				];
 			}
-			global $wgEnotifUserTalk;
-			if ( $wgEnotifUserTalk ) {
-				$defaultPreferences['enotifusertalkpages'] = array(
+			if ( $config->get( 'EnotifUserTalk' ) ) {
+				$defaultPreferences['enotifusertalkpages'] = [
 					'type' => 'toggle',
 					'section' => 'personal/email',
 					'label-message' => 'tog-enotifusertalkpages',
 					'disabled' => $disableEmailPrefs,
-				);
+				];
 			}
-			if ( $wgEnotifUserTalk || $wgEnotifWatchlist ) {
-				$defaultPreferences['enotifminoredits'] = array(
-					'type' => 'toggle',
-					'section' => 'personal/email',
-					'label-message' => 'tog-enotifminoredits',
-					'disabled' => $disableEmailPrefs,
-				);
+			if ( $config->get( 'EnotifUserTalk' ) || $config->get( 'EnotifWatchlist' ) ) {
+				if ( $config->get( 'EnotifMinorEdits' ) ) {
+					$defaultPreferences['enotifminoredits'] = [
+						'type' => 'toggle',
+						'section' => 'personal/email',
+						'label-message' => 'tog-enotifminoredits',
+						'disabled' => $disableEmailPrefs,
+					];
+				}
 
-				global $wgEnotifRevealEditorAddress;
-				if ( $wgEnotifRevealEditorAddress ) {
-					$defaultPreferences['enotifrevealaddr'] = array(
+				if ( $config->get( 'EnotifRevealEditorAddress' ) ) {
+					$defaultPreferences['enotifrevealaddr'] = [
 						'type' => 'toggle',
 						'section' => 'personal/email',
 						'label-message' => 'tog-enotifrevealaddr',
 						'disabled' => $disableEmailPrefs,
-					);
+					];
 				}
 			}
 		}
 	}
 
-	static function skinPreferences( $user, &$defaultPreferences ) {
-		## Skin #####################################
-		global $wgLang, $wgAllowUserCss, $wgAllowUserJs;
+	/**
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param array $defaultPreferences
+	 * @return void
+	 */
+	static function skinPreferences( $user, IContextSource $context, &$defaultPreferences ) {
+		# # Skin #####################################
 
-		$defaultPreferences['skin'] = array(
-			'type' => 'radio',
-			'options' => self::generateSkinOptions( $user ),
-			'label' => '&#160;',
-			'section' => 'rendering/skin',
-		);
+		// Skin selector, if there is at least one valid skin
+		$skinOptions = self::generateSkinOptions( $user, $context );
+		if ( $skinOptions ) {
+			$defaultPreferences['skin'] = [
+				'type' => 'radio',
+				'options' => $skinOptions,
+				'label' => '&#160;',
+				'section' => 'rendering/skin',
+			];
+		}
 
+		$config = $context->getConfig();
+		$allowUserCss = $config->get( 'AllowUserCss' );
+		$allowUserJs = $config->get( 'AllowUserJs' );
 		# Create links to user CSS/JS pages for all skins
 		# This code is basically copied from generateSkinOptions().  It'd
 		# be nice to somehow merge this back in there to avoid redundancy.
-		if ( $wgAllowUserCss || $wgAllowUserJs ) {
-			$sk = $user->getSkin();
-			$linkTools = array();
+		if ( $allowUserCss || $allowUserJs ) {
+			$linkTools = [];
+			$userName = $user->getName();
 
-			if ( $wgAllowUserCss ) {
-				$cssPage = Title::makeTitleSafe( NS_USER, $user->getName() . '/common.css' );
-				$linkTools[] = $sk->link( $cssPage, wfMsgHtml( 'prefs-custom-css' ) );
+			if ( $allowUserCss ) {
+				$cssPage = Title::makeTitleSafe( NS_USER, $userName . '/common.css' );
+				$linkTools[] = Linker::link( $cssPage, $context->msg( 'prefs-custom-css' )->escaped() );
 			}
 
-			if ( $wgAllowUserJs ) {
-				$jsPage = Title::makeTitleSafe( NS_USER, $user->getName() . '/common.js' );
-				$linkTools[] = $sk->link( $jsPage, wfMsgHtml( 'prefs-custom-js' ) );
+			if ( $allowUserJs ) {
+				$jsPage = Title::makeTitleSafe( NS_USER, $userName . '/common.js' );
+				$linkTools[] = Linker::link( $jsPage, $context->msg( 'prefs-custom-js' )->escaped() );
 			}
 
-			$defaultPreferences['commoncssjs'] = array(
+			$defaultPreferences['commoncssjs'] = [
 				'type' => 'info',
 				'raw' => true,
-				'default' => $wgLang->pipeList( $linkTools ),
+				'default' => $context->getLanguage()->pipeList( $linkTools ),
 				'label-message' => 'prefs-common-css-js',
 				'section' => 'rendering/skin',
-			);
-		}
-
-		$selectedSkin = $user->getOption( 'skin' );
-		if ( in_array( $selectedSkin, array( 'cologneblue', 'standard' ) ) ) {
-			$settings = array_flip( $wgLang->getQuickbarSettings() );
-
-			$defaultPreferences['quickbar'] = array(
-				'type' => 'radio',
-				'options' => $settings,
-				'section' => 'rendering/skin',
-				'label-message' => 'qbsettings',
-			);
+			];
 		}
 	}
 
-	static function mathPreferences( $user, &$defaultPreferences ) {
-		## Math #####################################
-		global $wgUseTeX, $wgLang;
-		if ( $wgUseTeX ) {
-			$defaultPreferences['math'] = array(
-				'type' => 'radio',
-				'options' => array_flip( array_map( 'wfMsgHtml', $wgLang->getMathNames() ) ),
-				'label' => '&#160;',
-				'section' => 'rendering/math',
-			);
-		}
-	}
-
-	static function filesPreferences( $user, &$defaultPreferences ) {
-		## Files #####################################
-		$defaultPreferences['imagesize'] = array(
+	/**
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param array $defaultPreferences
+	 */
+	static function filesPreferences( $user, IContextSource $context, &$defaultPreferences ) {
+		# # Files #####################################
+		$defaultPreferences['imagesize'] = [
 			'type' => 'select',
-			'options' => self::getImageSizes(),
+			'options' => self::getImageSizes( $context ),
 			'label-message' => 'imagemaxsize',
 			'section' => 'rendering/files',
-		);
-		$defaultPreferences['thumbsize'] = array(
+		];
+		$defaultPreferences['thumbsize'] = [
 			'type' => 'select',
-			'options' => self::getThumbSizes(),
+			'options' => self::getThumbSizes( $context ),
 			'label-message' => 'thumbsize',
 			'section' => 'rendering/files',
-		);
+		];
 	}
 
-	static function datetimePreferences( $user, &$defaultPreferences ) {
-		global $wgLang;
-
-		## Date and time #####################################
-		$dateOptions = self::getDateOptions();
+	/**
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param array $defaultPreferences
+	 * @return void
+	 */
+	static function datetimePreferences( $user, IContextSource $context, &$defaultPreferences ) {
+		# # Date and time #####################################
+		$dateOptions = self::getDateOptions( $context );
 		if ( $dateOptions ) {
-			$defaultPreferences['date'] = array(
+			$defaultPreferences['date'] = [
 				'type' => 'radio',
 				'options' => $dateOptions,
 				'label' => '&#160;',
-				'section' => 'datetime/dateformat',
-			);
+				'section' => 'rendering/dateformat',
+			];
 		}
 
 		// Info
-		$nowlocal = Xml::element( 'span', array( 'id' => 'wpLocalTime' ),
-			$wgLang->time( $now = wfTimestampNow(), true ) );
-		$nowserver = $wgLang->time( $now, false ) .
-			Html::hidden( 'wpServerTime', substr( $now, 8, 2 ) * 60 + substr( $now, 10, 2 ) );
+		$now = wfTimestampNow();
+		$lang = $context->getLanguage();
+		$nowlocal = Xml::element( 'span', [ 'id' => 'wpLocalTime' ],
+			$lang->userTime( $now, $user ) );
+		$nowserver = $lang->userTime( $now, $user,
+				[ 'format' => false, 'timecorrection' => false ] ) .
+			Html::hidden( 'wpServerTime', (int)substr( $now, 8, 2 ) * 60 + (int)substr( $now, 10, 2 ) );
 
-		$defaultPreferences['nowserver'] = array(
+		$defaultPreferences['nowserver'] = [
 			'type' => 'info',
 			'raw' => 1,
 			'label-message' => 'servertime',
 			'default' => $nowserver,
-			'section' => 'datetime/timeoffset',
-		);
+			'section' => 'rendering/timeoffset',
+		];
 
-		$defaultPreferences['nowlocal'] = array(
+		$defaultPreferences['nowlocal'] = [
 			'type' => 'info',
 			'raw' => 1,
 			'label-message' => 'localtime',
 			'default' => $nowlocal,
-			'section' => 'datetime/timeoffset',
-		);
+			'section' => 'rendering/timeoffset',
+		];
 
 		// Grab existing pref.
 		$tzOffset = $user->getOption( 'timecorrection' );
-		$tz = explode( '|', $tzOffset, 2 );
+		$tz = explode( '|', $tzOffset, 3 );
+
+		$tzOptions = self::getTimezoneOptions( $context );
 
 		$tzSetting = $tzOffset;
 		if ( count( $tz ) > 1 && $tz[0] == 'Offset' ) {
 			$minDiff = $tz[1];
 			$tzSetting = sprintf( '%+03d:%02d', floor( $minDiff / 60 ), abs( $minDiff ) % 60 );
+		} elseif ( count( $tz ) > 1 && $tz[0] == 'ZoneInfo' &&
+			!in_array( $tzOffset, HTMLFormField::flattenOptions( $tzOptions ) )
+		) {
+			# Timezone offset can vary with DST
+			$userTZ = timezone_open( $tz[2] );
+			if ( $userTZ !== false ) {
+				$minDiff = floor( timezone_offset_get( $userTZ, date_create( 'now' ) ) / 60 );
+				$tzSetting = "ZoneInfo|$minDiff|{$tz[2]}";
+			}
 		}
 
-		$defaultPreferences['timecorrection'] = array(
+		$defaultPreferences['timecorrection'] = [
 			'class' => 'HTMLSelectOrOtherField',
 			'label-message' => 'timezonelegend',
-			'options' => self::getTimezoneOptions(),
+			'options' => $tzOptions,
 			'default' => $tzSetting,
 			'size' => 20,
-			'section' => 'datetime/timeoffset',
-		);
+			'section' => 'rendering/timeoffset',
+		];
 	}
 
-	static function renderingPreferences( $user, &$defaultPreferences ) {
-		## Page Rendering ##############################
-		global $wgAllowUserCssPrefs;
-		if ( $wgAllowUserCssPrefs ) {
-			$defaultPreferences['underline'] = array(
+	/**
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param array $defaultPreferences
+	 */
+	static function renderingPreferences( $user, IContextSource $context, &$defaultPreferences ) {
+		# # Diffs ####################################
+		$defaultPreferences['diffonly'] = [
+			'type' => 'toggle',
+			'section' => 'rendering/diffs',
+			'label-message' => 'tog-diffonly',
+		];
+		$defaultPreferences['norollbackdiff'] = [
+			'type' => 'toggle',
+			'section' => 'rendering/diffs',
+			'label-message' => 'tog-norollbackdiff',
+		];
+
+		# # Page Rendering ##############################
+		if ( $context->getConfig()->get( 'AllowUserCssPrefs' ) ) {
+			$defaultPreferences['underline'] = [
 				'type' => 'select',
-				'options' => array(
-					wfMsg( 'underline-never' ) => 0,
-					wfMsg( 'underline-always' ) => 1,
-					wfMsg( 'underline-default' ) => 2,
-				),
+				'options' => [
+					$context->msg( 'underline-never' )->text() => 0,
+					$context->msg( 'underline-always' )->text() => 1,
+					$context->msg( 'underline-default' )->text() => 2,
+				],
 				'label-message' => 'tog-underline',
 				'section' => 'rendering/advancedrendering',
-			);
+			];
 		}
 
-		$stubThresholdValues = array( 50, 100, 500, 1000, 2000, 5000, 10000 );
-		$stubThresholdOptions = array( wfMsg( 'stub-threshold-disabled' ) => 0 );
+		$stubThresholdValues = [ 50, 100, 500, 1000, 2000, 5000, 10000 ];
+		$stubThresholdOptions = [ $context->msg( 'stub-threshold-disabled' )->text() => 0 ];
 		foreach ( $stubThresholdValues as $value ) {
-			$stubThresholdOptions[wfMsg( 'size-bytes', $value )] = $value;
+			$stubThresholdOptions[$context->msg( 'size-bytes', $value )->text()] = $value;
 		}
 
-		$defaultPreferences['stubthreshold'] = array(
-			'type' => 'selectorother',
+		$defaultPreferences['stubthreshold'] = [
+			'type' => 'select',
 			'section' => 'rendering/advancedrendering',
 			'options' => $stubThresholdOptions,
-			'size' => 20,
-			'label' => wfMsg( 'stub-threshold' ), // Raw HTML message. Yay?
-		);
+			// This is not a raw HTML message; label-raw is needed for the manual <a></a>
+			'label-raw' => $context->msg( 'stub-threshold' )->rawParams(
+				'<a href="#" class="stub">' .
+				$context->msg( 'stub-threshold-sample-link' )->parse() .
+				'</a>' )->parse(),
+		];
 
-		if ( $wgAllowUserCssPrefs ) {
-			$defaultPreferences['highlightbroken'] = array(
-				'type' => 'toggle',
-				'section' => 'rendering/advancedrendering',
-				'label' => wfMsg( 'tog-highlightbroken' ), // Raw HTML
-			);
-			$defaultPreferences['showtoc'] = array(
-				'type' => 'toggle',
-				'section' => 'rendering/advancedrendering',
-				'label-message' => 'tog-showtoc',
-			);
-		}
-		$defaultPreferences['nocache'] = array(
-			'type' => 'toggle',
-			'label-message' => 'tog-nocache',
-			'section' => 'rendering/advancedrendering',
-		);
-		$defaultPreferences['showhiddencats'] = array(
+		$defaultPreferences['showhiddencats'] = [
 			'type' => 'toggle',
 			'section' => 'rendering/advancedrendering',
 			'label-message' => 'tog-showhiddencats'
-		);
-		$defaultPreferences['showjumplinks'] = array(
-			'type' => 'toggle',
-			'section' => 'rendering/advancedrendering',
-			'label-message' => 'tog-showjumplinks',
-		);
+		];
 
-		if ( $wgAllowUserCssPrefs ) {
-			$defaultPreferences['justify'] = array(
-				'type' => 'toggle',
-				'section' => 'rendering/advancedrendering',
-				'label-message' => 'tog-justify',
-			);
-		}
-
-		$defaultPreferences['numberheadings'] = array(
+		$defaultPreferences['numberheadings'] = [
 			'type' => 'toggle',
 			'section' => 'rendering/advancedrendering',
 			'label-message' => 'tog-numberheadings',
-		);
+		];
 	}
 
-	static function editingPreferences( $user, &$defaultPreferences ) {
-		global $wgUseExternalEditor, $wgAllowUserCssPrefs;
-
-		## Editing #####################################
-		$defaultPreferences['cols'] = array(
-			'type' => 'int',
-			'label-message' => 'columns',
-			'section' => 'editing/textboxsize',
-			'min' => 4,
-			'max' => 1000,
-		);
-		$defaultPreferences['rows'] = array(
-			'type' => 'int',
-			'label-message' => 'rows',
-			'section' => 'editing/textboxsize',
-			'min' => 4,
-			'max' => 1000,
-		);
-
-		if ( $wgAllowUserCssPrefs ) {
-			$defaultPreferences['editfont'] = array(
-				'type' => 'select',
-				'section' => 'editing/advancedediting',
-				'label-message' => 'editfont-style',
-				'options' => array(
-					wfMsg( 'editfont-default' ) => 'default',
-					wfMsg( 'editfont-monospace' ) => 'monospace',
-					wfMsg( 'editfont-sansserif' ) => 'sans-serif',
-					wfMsg( 'editfont-serif' ) => 'serif',
-				)
-			);
-		}
-		$defaultPreferences['previewontop'] = array(
-			'type' => 'toggle',
-			'section' => 'editing/advancedediting',
-			'label-message' => 'tog-previewontop',
-		);
-		$defaultPreferences['previewonfirst'] = array(
-			'type' => 'toggle',
-			'section' => 'editing/advancedediting',
-			'label-message' => 'tog-previewonfirst',
-		);
-
-		if ( $wgAllowUserCssPrefs ) {
-			$defaultPreferences['editsection'] = array(
-				'type' => 'toggle',
-				'section' => 'editing/advancedediting',
-				'label-message' => 'tog-editsection',
-			);
-		}
-		$defaultPreferences['editsectiononrightclick'] = array(
+	/**
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param array $defaultPreferences
+	 */
+	static function editingPreferences( $user, IContextSource $context, &$defaultPreferences ) {
+		# # Editing #####################################
+		$defaultPreferences['editsectiononrightclick'] = [
 			'type' => 'toggle',
 			'section' => 'editing/advancedediting',
 			'label-message' => 'tog-editsectiononrightclick',
-		);
-		$defaultPreferences['editondblclick'] = array(
+		];
+		$defaultPreferences['editondblclick'] = [
 			'type' => 'toggle',
 			'section' => 'editing/advancedediting',
 			'label-message' => 'tog-editondblclick',
-		);
-		$defaultPreferences['showtoolbar'] = array(
-			'type' => 'toggle',
-			'section' => 'editing/advancedediting',
-			'label-message' => 'tog-showtoolbar',
-		);
-		$defaultPreferences['minordefault'] = array(
-			'type' => 'toggle',
-			'section' => 'editing/advancedediting',
-			'label-message' => 'tog-minordefault',
-		);
+		];
 
-		if ( $wgUseExternalEditor ) {
-			$defaultPreferences['externaleditor'] = array(
-				'type' => 'toggle',
-				'section' => 'editing/advancedediting',
-				'label-message' => 'tog-externaleditor',
-			);
-			$defaultPreferences['externaldiff'] = array(
-				'type' => 'toggle',
-				'section' => 'editing/advancedediting',
-				'label-message' => 'tog-externaldiff',
-			);
+		if ( $context->getConfig()->get( 'AllowUserCssPrefs' ) ) {
+			$defaultPreferences['editfont'] = [
+				'type' => 'select',
+				'section' => 'editing/editor',
+				'label-message' => 'editfont-style',
+				'options' => [
+					$context->msg( 'editfont-default' )->text() => 'default',
+					$context->msg( 'editfont-monospace' )->text() => 'monospace',
+					$context->msg( 'editfont-sansserif' )->text() => 'sans-serif',
+					$context->msg( 'editfont-serif' )->text() => 'serif',
+				]
+			];
 		}
-
-		$defaultPreferences['forceeditsummary'] = array(
+		$defaultPreferences['cols'] = [
+			'type' => 'int',
+			'label-message' => 'columns',
+			'section' => 'editing/editor',
+			'min' => 4,
+			'max' => 1000,
+		];
+		$defaultPreferences['rows'] = [
+			'type' => 'int',
+			'label-message' => 'rows',
+			'section' => 'editing/editor',
+			'min' => 4,
+			'max' => 1000,
+		];
+		if ( $user->isAllowed( 'minoredit' ) ) {
+			$defaultPreferences['minordefault'] = [
+				'type' => 'toggle',
+				'section' => 'editing/editor',
+				'label-message' => 'tog-minordefault',
+			];
+		}
+		$defaultPreferences['forceeditsummary'] = [
 			'type' => 'toggle',
-			'section' => 'editing/advancedediting',
+			'section' => 'editing/editor',
 			'label-message' => 'tog-forceeditsummary',
-		);
-
-				
-		$defaultPreferences['uselivepreview'] = array(
+		];
+		$defaultPreferences['useeditwarning'] = [
 			'type' => 'toggle',
-			'section' => 'editing/advancedediting',
+			'section' => 'editing/editor',
+			'label-message' => 'tog-useeditwarning',
+		];
+		$defaultPreferences['showtoolbar'] = [
+			'type' => 'toggle',
+			'section' => 'editing/editor',
+			'label-message' => 'tog-showtoolbar',
+		];
+
+		$defaultPreferences['previewonfirst'] = [
+			'type' => 'toggle',
+			'section' => 'editing/preview',
+			'label-message' => 'tog-previewonfirst',
+		];
+		$defaultPreferences['previewontop'] = [
+			'type' => 'toggle',
+			'section' => 'editing/preview',
+			'label-message' => 'tog-previewontop',
+		];
+		$defaultPreferences['uselivepreview'] = [
+			'type' => 'toggle',
+			'section' => 'editing/preview',
 			'label-message' => 'tog-uselivepreview',
-		);
+		];
+
 	}
 
-	static function rcPreferences( $user, &$defaultPreferences ) {
-		global $wgRCMaxAge, $wgUseRCPatrol, $wgLang;
-
-		## RecentChanges #####################################
-		$defaultPreferences['rcdays'] = array(
+	/**
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param array $defaultPreferences
+	 */
+	static function rcPreferences( $user, IContextSource $context, &$defaultPreferences ) {
+		$config = $context->getConfig();
+		$rcMaxAge = $config->get( 'RCMaxAge' );
+		# # RecentChanges #####################################
+		$defaultPreferences['rcdays'] = [
 			'type' => 'float',
 			'label-message' => 'recentchangesdays',
 			'section' => 'rc/displayrc',
 			'min' => 1,
-			'max' => ceil( $wgRCMaxAge / ( 3600 * 24 ) ),
-			'help' => wfMsgExt(
-				'recentchangesdays-max',
-				array( 'parsemag' ),
-				$wgLang->formatNum( ceil( $wgRCMaxAge / ( 3600 * 24 ) ) )
-			)
-		);
-		$defaultPreferences['rclimit'] = array(
+			'max' => ceil( $rcMaxAge / ( 3600 * 24 ) ),
+			'help' => $context->msg( 'recentchangesdays-max' )->numParams(
+				ceil( $rcMaxAge / ( 3600 * 24 ) ) )->escaped()
+		];
+		$defaultPreferences['rclimit'] = [
 			'type' => 'int',
 			'label-message' => 'recentchangescount',
 			'help-message' => 'prefs-help-recentchangescount',
 			'section' => 'rc/displayrc',
-		);
-		$defaultPreferences['usenewrc'] = array(
+		];
+		$defaultPreferences['usenewrc'] = [
 			'type' => 'toggle',
 			'label-message' => 'tog-usenewrc',
 			'section' => 'rc/advancedrc',
-		);
-		$defaultPreferences['hideminor'] = array(
+		];
+		$defaultPreferences['hideminor'] = [
 			'type' => 'toggle',
 			'label-message' => 'tog-hideminor',
 			'section' => 'rc/advancedrc',
-		);
+		];
 
-		if ( $wgUseRCPatrol ) {
-			$defaultPreferences['hidepatrolled'] = array(
+		if ( $config->get( 'RCWatchCategoryMembership' ) ) {
+			$defaultPreferences['hidecategorization'] = [
+				'type' => 'toggle',
+				'label-message' => 'tog-hidecategorization',
+				'section' => 'rc/advancedrc',
+			];
+		}
+
+		if ( $user->useRCPatrol() ) {
+			$defaultPreferences['hidepatrolled'] = [
 				'type' => 'toggle',
 				'section' => 'rc/advancedrc',
 				'label-message' => 'tog-hidepatrolled',
-			);
-			$defaultPreferences['newpageshidepatrolled'] = array(
+			];
+		}
+
+		if ( $user->useNPPatrol() ) {
+			$defaultPreferences['newpageshidepatrolled'] = [
 				'type' => 'toggle',
 				'section' => 'rc/advancedrc',
 				'label-message' => 'tog-newpageshidepatrolled',
-			);
+			];
 		}
 
-		global $wgRCShowWatchingUsers;
-		if ( $wgRCShowWatchingUsers ) {
-			$defaultPreferences['shownumberswatching'] = array(
+		if ( $config->get( 'RCShowWatchingUsers' ) ) {
+			$defaultPreferences['shownumberswatching'] = [
 				'type' => 'toggle',
 				'section' => 'rc/advancedrc',
 				'label-message' => 'tog-shownumberswatching',
-			);
+			];
 		}
 	}
 
-	static function watchlistPreferences( $user, &$defaultPreferences ) {
-		global $wgUseRCPatrol, $wgEnableAPI;
+	/**
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param array $defaultPreferences
+	 */
+	static function watchlistPreferences( $user, IContextSource $context, &$defaultPreferences ) {
+		$config = $context->getConfig();
+		$watchlistdaysMax = ceil( $config->get( 'RCMaxAge' ) / ( 3600 * 24 ) );
 
-		## Watchlist #####################################
-		$defaultPreferences['watchlistdays'] = array(
+		# # Watchlist #####################################
+		if ( $user->isAllowed( 'editmywatchlist' ) ) {
+			$editWatchlistLinks = [];
+			$editWatchlistModes = [
+				'edit' => [ 'EditWatchlist', false ],
+				'raw' => [ 'EditWatchlist', 'raw' ],
+				'clear' => [ 'EditWatchlist', 'clear' ],
+			];
+			foreach ( $editWatchlistModes as $editWatchlistMode => $mode ) {
+				// Messages: prefs-editwatchlist-edit, prefs-editwatchlist-raw, prefs-editwatchlist-clear
+				$editWatchlistLinks[] = Linker::linkKnown(
+					SpecialPage::getTitleFor( $mode[0], $mode[1] ),
+					$context->msg( "prefs-editwatchlist-{$editWatchlistMode}" )->parse()
+				);
+			}
+
+			$defaultPreferences['editwatchlist'] = [
+				'type' => 'info',
+				'raw' => true,
+				'default' => $context->getLanguage()->pipeList( $editWatchlistLinks ),
+				'label-message' => 'prefs-editwatchlist-label',
+				'section' => 'watchlist/editwatchlist',
+			];
+		}
+
+		$defaultPreferences['watchlistdays'] = [
 			'type' => 'float',
 			'min' => 0,
-			'max' => 7,
+			'max' => $watchlistdaysMax,
 			'section' => 'watchlist/displaywatchlist',
-			'help' => wfMsgHtml( 'prefs-watchlist-days-max' ),
+			'help' => $context->msg( 'prefs-watchlist-days-max' )->numParams(
+				$watchlistdaysMax )->escaped(),
 			'label-message' => 'prefs-watchlist-days',
-		);
-		$defaultPreferences['wllimit'] = array(
+		];
+		$defaultPreferences['wllimit'] = [
 			'type' => 'int',
 			'min' => 0,
 			'max' => 1000,
 			'label-message' => 'prefs-watchlist-edits',
-			'help' => wfMsgHtml( 'prefs-watchlist-edits-max' ),
+			'help' => $context->msg( 'prefs-watchlist-edits-max' )->escaped(),
 			'section' => 'watchlist/displaywatchlist',
-		);
-		$defaultPreferences['extendwatchlist'] = array(
+		];
+		$defaultPreferences['extendwatchlist'] = [
 			'type' => 'toggle',
 			'section' => 'watchlist/advancedwatchlist',
 			'label-message' => 'tog-extendwatchlist',
-		);
-		$defaultPreferences['watchlisthideminor'] = array(
+		];
+		$defaultPreferences['watchlisthideminor'] = [
 			'type' => 'toggle',
 			'section' => 'watchlist/advancedwatchlist',
 			'label-message' => 'tog-watchlisthideminor',
-		);
-		$defaultPreferences['watchlisthidebots'] = array(
+		];
+		$defaultPreferences['watchlisthidebots'] = [
 			'type' => 'toggle',
 			'section' => 'watchlist/advancedwatchlist',
 			'label-message' => 'tog-watchlisthidebots',
-		);
-		$defaultPreferences['watchlisthideown'] = array(
+		];
+		$defaultPreferences['watchlisthideown'] = [
 			'type' => 'toggle',
 			'section' => 'watchlist/advancedwatchlist',
 			'label-message' => 'tog-watchlisthideown',
-		);
-		$defaultPreferences['watchlisthideanons'] = array(
+		];
+		$defaultPreferences['watchlisthideanons'] = [
 			'type' => 'toggle',
 			'section' => 'watchlist/advancedwatchlist',
 			'label-message' => 'tog-watchlisthideanons',
-		);
-		$defaultPreferences['watchlisthideliu'] = array(
+		];
+		$defaultPreferences['watchlisthideliu'] = [
 			'type' => 'toggle',
 			'section' => 'watchlist/advancedwatchlist',
 			'label-message' => 'tog-watchlisthideliu',
-		);
+		];
+		$defaultPreferences['watchlistreloadautomatically'] = [
+			'type' => 'toggle',
+			'section' => 'watchlist/advancedwatchlist',
+			'label-message' => 'tog-watchlistreloadautomatically',
+		];
 
-		if ( $wgUseRCPatrol ) {
-			$defaultPreferences['watchlisthidepatrolled'] = array(
+		if ( $config->get( 'RCWatchCategoryMembership' ) ) {
+			$defaultPreferences['watchlisthidecategorization'] = [
+				'type' => 'toggle',
+				'section' => 'watchlist/advancedwatchlist',
+				'label-message' => 'tog-watchlisthidecategorization',
+			];
+		}
+
+		if ( $user->useRCPatrol() ) {
+			$defaultPreferences['watchlisthidepatrolled'] = [
 				'type' => 'toggle',
 				'section' => 'watchlist/advancedwatchlist',
 				'label-message' => 'tog-watchlisthidepatrolled',
-			);
+			];
 		}
 
-		if ( $wgEnableAPI ) {
-			# Some random gibberish as a proposed default
-			$hash = sha1( mt_rand() . microtime( true ) );
-
-			$defaultPreferences['watchlisttoken'] = array(
-				'type' => 'text',
-				'section' => 'watchlist/advancedwatchlist',
-				'label-message' => 'prefs-watchlist-token',
-				'help' => wfMsgHtml( 'prefs-help-watchlist-token', $hash )
-			);
-		}
-
-		$watchTypes = array(
+		$watchTypes = [
 			'edit' => 'watchdefault',
 			'move' => 'watchmoves',
 			'delete' => 'watchdeletion'
-		);
+		];
 
 		// Kinda hacky
 		if ( $user->isAllowed( 'createpage' ) || $user->isAllowed( 'createtalk' ) ) {
 			$watchTypes['read'] = 'watchcreations';
 		}
 
+		if ( $user->isAllowed( 'rollback' ) ) {
+			$watchTypes['rollback'] = 'watchrollback';
+		}
+
+		if ( $user->isAllowed( 'upload' ) ) {
+			$watchTypes['upload'] = 'watchuploads';
+		}
+
 		foreach ( $watchTypes as $action => $pref ) {
 			if ( $user->isAllowed( $action ) ) {
-				$defaultPreferences[$pref] = array(
+				// Messages:
+				// tog-watchdefault, tog-watchmoves, tog-watchdeletion, tog-watchcreations, tog-watchuploads
+				// tog-watchrollback
+				$defaultPreferences[$pref] = [
 					'type' => 'toggle',
 					'section' => 'watchlist/advancedwatchlist',
 					'label-message' => "tog-$pref",
-				);
+				];
 			}
 		}
-	}
 
-	static function searchPreferences( $user, &$defaultPreferences ) {
-		global $wgContLang;
-
-		## Search #####################################
-		$defaultPreferences['searchlimit'] = array(
-			'type' => 'int',
-			'label-message' => 'resultsperpage',
-			'section' => 'searchoptions/displaysearchoptions',
-			'min' => 0,
-		);
-		$defaultPreferences['contextlines'] = array(
-			'type' => 'int',
-			'label-message' => 'contextlines',
-			'section' => 'searchoptions/displaysearchoptions',
-			'min' => 0,
-		);
-		$defaultPreferences['contextchars'] = array(
-			'type' => 'int',
-			'label-message' => 'contextchars',
-			'section' => 'searchoptions/displaysearchoptions',
-			'min' => 0,
-		);
-
-		global $wgEnableMWSuggest;
-		if ( $wgEnableMWSuggest ) {
-			$defaultPreferences['disablesuggest'] = array(
-				'type' => 'toggle',
-				'label-message' => 'mwsuggest-disable',
-				'section' => 'searchoptions/displaysearchoptions',
-			);
-		}
-		
-		global $wgVectorUseSimpleSearch;
-		if ( $wgVectorUseSimpleSearch ) {
-			$defaultPreferences['vector-simplesearch'] = array(
-				'type' => 'toggle',
-				'label-message' => 'vector-simplesearch-preference',
-				'section' => 'searchoptions/displaysearchoptions'
-			);
-		}
-
-		$defaultPreferences['searcheverything'] = array(
-			'type' => 'toggle',
-			'label-message' => 'searcheverything-enable',
-			'section' => 'searchoptions/advancedsearchoptions',
-		);
-
-		// Searchable namespaces back-compat with old format
-		$searchableNamespaces = SearchEngine::searchableNamespaces();
-
-		$nsOptions = array();
-
-		foreach ( $wgContLang->getNamespaces() as $ns => $name ) {
-			if ( $ns < 0 ) {
-				continue;
-			}
-
-			$displayNs = str_replace( '_', ' ', $name );
-
-			if ( !$displayNs ) {
-				$displayNs = wfMsg( 'blanknamespace' );
-			}
-
-			$displayNs = htmlspecialchars( $displayNs );
-			$nsOptions[$displayNs] = $ns;
-		}
-
-		$defaultPreferences['searchnamespaces'] = array(
-			'type' => 'multiselect',
-			'label-message' => 'defaultns',
-			'options' => $nsOptions,
-			'section' => 'searchoptions/advancedsearchoptions',
-			'prefix' => 'searchNs',
-		);
-	}
-
-	static function miscPreferences( $user, &$defaultPreferences ) {
-		## Misc #####################################
-		$defaultPreferences['diffonly'] = array(
-			'type' => 'toggle',
-			'section' => 'misc/diffs',
-			'label-message' => 'tog-diffonly',
-		);
-		$defaultPreferences['norollbackdiff'] = array(
-			'type' => 'toggle',
-			'section' => 'misc/diffs',
-			'label-message' => 'tog-norollbackdiff',
-		);
-
-		// Stuff from Language::getExtraUserToggles()
-		global $wgContLang;
-
-		$toggles = $wgContLang->getExtraUserToggles();
-
-		foreach ( $toggles as $toggle ) {
-			$defaultPreferences[$toggle] = array(
-				'type' => 'toggle',
-				'section' => 'personal/i18n',
-				'label-message' => "tog-$toggle",
-			);
+		if ( $config->get( 'EnableAPI' ) ) {
+			$defaultPreferences['watchlisttoken'] = [
+				'type' => 'api',
+			];
+			$defaultPreferences['watchlisttoken-info'] = [
+				'type' => 'info',
+				'section' => 'watchlist/tokenwatchlist',
+				'label-message' => 'prefs-watchlist-token',
+				'default' => $user->getTokenFromOption( 'watchlisttoken' ),
+				'help-message' => 'prefs-help-watchlist-token2',
+			];
 		}
 	}
 
 	/**
-	 * @param $user The User object
-	 * @return Array: text/links to display as key; $skinkey as value
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param array $defaultPreferences
 	 */
-	static function generateSkinOptions( $user ) {
-		global $wgDefaultSkin, $wgLang, $wgAllowUserCss, $wgAllowUserJs;
-		$ret = array();
+	static function searchPreferences( $user, IContextSource $context, &$defaultPreferences ) {
+		foreach ( MWNamespace::getValidNamespaces() as $n ) {
+			$defaultPreferences['searchNs' . $n] = [
+				'type' => 'api',
+			];
+		}
+	}
+
+	/**
+	 * Dummy, kept for backwards-compatibility.
+	 */
+	static function miscPreferences( $user, IContextSource $context, &$defaultPreferences ) {
+	}
+
+	/**
+	 * @param User $user The User object
+	 * @param IContextSource $context
+	 * @return array Text/links to display as key; $skinkey as value
+	 */
+	static function generateSkinOptions( $user, IContextSource $context ) {
+		$ret = [];
 
 		$mptitle = Title::newMainPage();
-		$previewtext = wfMsgHtml( 'skin-preview' );
+		$previewtext = $context->msg( 'skin-preview' )->escaped();
 
-		# Only show members of Skin::getSkinNames() rather than
-		# $skinNames (skins is all skin names from Language.php)
-		$validSkinNames = Skin::getUsableSkins();
+		# Only show skins that aren't disabled in $wgSkipSkins
+		$validSkinNames = Skin::getAllowedSkins();
 
 		# Sort by UI skin name. First though need to update validSkinNames as sometimes
 		# the skinkey & UI skinname differ (e.g. "standard" skinkey is "Classic" in the UI).
 		foreach ( $validSkinNames as $skinkey => &$skinname ) {
-			$msgName = "skinname-{$skinkey}";
-			$localisedSkinName = wfMsg( $msgName );
-			if ( !wfEmptyMsg( $msgName, $localisedSkinName ) ) {
-				$skinname = htmlspecialchars( $localisedSkinName );
+			$msg = $context->msg( "skinname-{$skinkey}" );
+			if ( $msg->exists() ) {
+				$skinname = htmlspecialchars( $msg->text() );
 			}
 		}
 		asort( $validSkinNames );
-		$sk = $user->getSkin();
 
+		$config = $context->getConfig();
+		$defaultSkin = $config->get( 'DefaultSkin' );
+		$allowUserCss = $config->get( 'AllowUserCss' );
+		$allowUserJs = $config->get( 'AllowUserJs' );
+
+		$foundDefault = false;
 		foreach ( $validSkinNames as $skinkey => $sn ) {
-			$linkTools = array();
+			$linkTools = [];
 
 			# Mark the default skin
-			if ( $skinkey == $wgDefaultSkin ) {
-				$linkTools[] = wfMsgHtml( 'default' );
+			if ( strcasecmp( $skinkey, $defaultSkin ) === 0 ) {
+				$linkTools[] = $context->msg( 'default' )->escaped();
+				$foundDefault = true;
 			}
 
 			# Create preview link
-			$mplink = htmlspecialchars( $mptitle->getLocalURL( "useskin=$skinkey" ) );
+			$mplink = htmlspecialchars( $mptitle->getLocalURL( [ 'useskin' => $skinkey ] ) );
 			$linkTools[] = "<a target='_blank' href=\"$mplink\">$previewtext</a>";
 
 			# Create links to user CSS/JS pages
-			if ( $wgAllowUserCss ) {
+			if ( $allowUserCss ) {
 				$cssPage = Title::makeTitleSafe( NS_USER, $user->getName() . '/' . $skinkey . '.css' );
-				$linkTools[] = $sk->link( $cssPage, wfMsgHtml( 'prefs-custom-css' ) );
+				$linkTools[] = Linker::link( $cssPage, $context->msg( 'prefs-custom-css' )->escaped() );
 			}
 
-			if ( $wgAllowUserJs ) {
+			if ( $allowUserJs ) {
 				$jsPage = Title::makeTitleSafe( NS_USER, $user->getName() . '/' . $skinkey . '.js' );
-				$linkTools[] = $sk->link( $jsPage, wfMsgHtml( 'prefs-custom-js' ) );
+				$linkTools[] = Linker::link( $jsPage, $context->msg( 'prefs-custom-js' )->escaped() );
 			}
 
-			$display = $sn . ' ' . wfMsg( 'parentheses', $wgLang->pipeList( $linkTools ) );
+			$display = $sn . ' ' . $context->msg( 'parentheses' )
+				->rawParams( $context->getLanguage()->pipeList( $linkTools ) )
+				->escaped();
 			$ret[$display] = $skinkey;
+		}
+
+		if ( !$foundDefault ) {
+			// If the default skin is not available, things are going to break horribly because the
+			// default value for skin selector will not be a valid value. Let's just not show it then.
+			return [];
 		}
 
 		return $ret;
 	}
 
-	static function getDateOptions() {
-		global $wgLang;
-		$dateopts = $wgLang->getDatePreferences();
+	/**
+	 * @param IContextSource $context
+	 * @return array
+	 */
+	static function getDateOptions( IContextSource $context ) {
+		$lang = $context->getLanguage();
+		$dateopts = $lang->getDatePreferences();
 
-		$ret = array();
+		$ret = [];
 
 		if ( $dateopts ) {
 			if ( !in_array( 'default', $dateopts ) ) {
@@ -1064,7 +1185,7 @@ class Preferences {
 										// Bug 19237
 			}
 
-			// KLUGE: site default might not be valid for user language
+			// FIXME KLUGE: site default might not be valid for user language
 			global $wgDefaultUserOptions;
 			if ( !in_array( $wgDefaultUserOptions['date'], $dateopts ) ) {
 				$wgDefaultUserOptions['date'] = 'default';
@@ -1073,9 +1194,9 @@ class Preferences {
 			$epoch = wfTimestampNow();
 			foreach ( $dateopts as $key ) {
 				if ( $key == 'default' ) {
-					$formatted = wfMsgHtml( 'datedefault' );
+					$formatted = $context->msg( 'datedefault' )->escaped();
 				} else {
-					$formatted = htmlspecialchars( $wgLang->timeanddate( $epoch, false, $key ) );
+					$formatted = htmlspecialchars( $lang->timeanddate( $epoch, false, $key ) );
 				}
 				$ret[$formatted] = $key;
 			}
@@ -1083,147 +1204,183 @@ class Preferences {
 		return $ret;
 	}
 
-	static function getImageSizes() {
-		global $wgImageLimits;
+	/**
+	 * @param IContextSource $context
+	 * @return array
+	 */
+	static function getImageSizes( IContextSource $context ) {
+		$ret = [];
+		$pixels = $context->msg( 'unit-pixel' )->text();
 
-		$ret = array();
-
-		foreach ( $wgImageLimits as $index => $limits ) {
-			$display = "{$limits[0]}×{$limits[1]}" . wfMsg( 'unit-pixel' );
+		foreach ( $context->getConfig()->get( 'ImageLimits' ) as $index => $limits ) {
+			$display = "{$limits[0]}×{$limits[1]}" . $pixels;
 			$ret[$display] = $index;
 		}
 
 		return $ret;
 	}
 
-	static function getThumbSizes() {
-		global $wgThumbLimits;
+	/**
+	 * @param IContextSource $context
+	 * @return array
+	 */
+	static function getThumbSizes( IContextSource $context ) {
+		$ret = [];
+		$pixels = $context->msg( 'unit-pixel' )->text();
 
-		$ret = array();
-
-		foreach ( $wgThumbLimits as $index => $size ) {
-			$display = $size . wfMsg( 'unit-pixel' );
+		foreach ( $context->getConfig()->get( 'ThumbLimits' ) as $index => $size ) {
+			$display = $size . $pixels;
 			$ret[$display] = $index;
 		}
 
 		return $ret;
 	}
 
-	static function validateSignature( $signature, $alldata ) {
-		global $wgParser, $wgMaxSigChars, $wgLang;
-		if ( mb_strlen( $signature ) > $wgMaxSigChars ) {
-			return Xml::element( 'span', array( 'class' => 'error' ),
-				wfMsgExt( 'badsiglength', 'parsemag',
-					$wgLang->formatNum( $wgMaxSigChars )
-				)
-			);
+	/**
+	 * @param string $signature
+	 * @param array $alldata
+	 * @param HTMLForm $form
+	 * @return bool|string
+	 */
+	static function validateSignature( $signature, $alldata, $form ) {
+		global $wgParser;
+		$maxSigChars = $form->getConfig()->get( 'MaxSigChars' );
+		if ( mb_strlen( $signature ) > $maxSigChars ) {
+			return Xml::element( 'span', [ 'class' => 'error' ],
+				$form->msg( 'badsiglength' )->numParams( $maxSigChars )->text() );
 		} elseif ( isset( $alldata['fancysig'] ) &&
 				$alldata['fancysig'] &&
-				false === $wgParser->validateSig( $signature ) ) {
-			return Xml::element( 'span', array( 'class' => 'error' ), wfMsg( 'badsig' ) );
+				$wgParser->validateSig( $signature ) === false
+		) {
+			return Xml::element(
+				'span',
+				[ 'class' => 'error' ],
+				$form->msg( 'badsig' )->text()
+			);
 		} else {
 			return true;
 		}
 	}
 
-	static function cleanSignature( $signature, $alldata ) {
-		global $wgParser;
+	/**
+	 * @param string $signature
+	 * @param array $alldata
+	 * @param HTMLForm $form
+	 * @return string
+	 */
+	static function cleanSignature( $signature, $alldata, $form ) {
 		if ( isset( $alldata['fancysig'] ) && $alldata['fancysig'] ) {
+			global $wgParser;
 			$signature = $wgParser->cleanSig( $signature );
 		} else {
 			// When no fancy sig used, make sure ~{3,5} get removed.
-			$signature = $wgParser->cleanSigInSig( $signature );
+			$signature = Parser::cleanSigInSig( $signature );
 		}
 
 		return $signature;
 	}
 
-	static function validateEmail( $email, $alldata ) {
-		if ( $email && !User::isValidEmailAddr( $email ) ) {
-			return wfMsgExt( 'invalidemailaddress', 'parseinline' );
+	/**
+	 * @param User $user
+	 * @param IContextSource $context
+	 * @param string $formClass
+	 * @param array $remove Array of items to remove
+	 * @return PreferencesForm|HtmlForm
+	 */
+	static function getFormObject(
+		$user,
+		IContextSource $context,
+		$formClass = 'PreferencesForm',
+		array $remove = []
+	) {
+		$formDescriptor = Preferences::getPreferences( $user, $context );
+		if ( count( $remove ) ) {
+			$removeKeys = array_flip( $remove );
+			$formDescriptor = array_diff_key( $formDescriptor, $removeKeys );
 		}
 
-		global $wgEmailConfirmToEdit;
-		if ( $wgEmailConfirmToEdit && !$email ) {
-			return wfMsgExt( 'noemailtitle', 'parseinline' );
+		// Remove type=api preferences. They are not intended for rendering in the form.
+		foreach ( $formDescriptor as $name => $info ) {
+			if ( isset( $info['type'] ) && $info['type'] === 'api' ) {
+				unset( $formDescriptor[$name] );
+			}
 		}
-		return true;
-	}
 
-	static function getFormObject( $user, $formClass = 'PreferencesForm' ) {
-		$formDescriptor = Preferences::getPreferences( $user );
-		$htmlForm = new $formClass( $formDescriptor, 'prefs' );
+		/**
+		 * @var $htmlForm PreferencesForm
+		 */
+		$htmlForm = new $formClass( $formDescriptor, $context, 'prefs' );
 
-		$htmlForm->setSubmitText( wfMsg( 'saveprefs' ) );
+		$htmlForm->setModifiedUser( $user );
+		$htmlForm->setId( 'mw-prefs-form' );
+		$htmlForm->setAutocomplete( 'off' );
+		$htmlForm->setSubmitText( $context->msg( 'saveprefs' )->text() );
 		# Used message keys: 'accesskey-preferences-save', 'tooltip-preferences-save'
 		$htmlForm->setSubmitTooltip( 'preferences-save' );
-		$htmlForm->setTitle( SpecialPage::getTitleFor( 'Preferences' ) );
 		$htmlForm->setSubmitID( 'prefsubmit' );
-		$htmlForm->setSubmitCallback( array( 'Preferences', 'tryFormSubmit' ) );
+		$htmlForm->setSubmitCallback( [ 'Preferences', 'tryFormSubmit' ] );
 
 		return $htmlForm;
 	}
 
-	static function getTimezoneOptions() {
-		$opt = array();
+	/**
+	 * @param IContextSource $context
+	 * @return array
+	 */
+	static function getTimezoneOptions( IContextSource $context ) {
+		$opt = [];
 
-		global $wgLocalTZoffset;
+		$localTZoffset = $context->getConfig()->get( 'LocalTZoffset' );
+		$timeZoneList = self::getTimeZoneList( $context->getLanguage() );
 
-		$opt[wfMsg( 'timezoneuseserverdefault' )] = "System|$wgLocalTZoffset";
-		$opt[wfMsg( 'timezoneuseoffset' )] = 'other';
-		$opt[wfMsg( 'guesstimezone' )] = 'guess';
-
-		if ( function_exists( 'timezone_identifiers_list' ) ) {
-			# Read timezone list
-			$tzs = timezone_identifiers_list();
-			sort( $tzs );
-
-			$tzRegions = array();
-			$tzRegions['Africa'] = wfMsg( 'timezoneregion-africa' );
-			$tzRegions['America'] = wfMsg( 'timezoneregion-america' );
-			$tzRegions['Antarctica'] = wfMsg( 'timezoneregion-antarctica' );
-			$tzRegions['Arctic'] = wfMsg( 'timezoneregion-arctic' );
-			$tzRegions['Asia'] = wfMsg( 'timezoneregion-asia' );
-			$tzRegions['Atlantic'] = wfMsg( 'timezoneregion-atlantic' );
-			$tzRegions['Australia'] = wfMsg( 'timezoneregion-australia' );
-			$tzRegions['Europe'] = wfMsg( 'timezoneregion-europe' );
-			$tzRegions['Indian'] = wfMsg( 'timezoneregion-indian' );
-			$tzRegions['Pacific'] = wfMsg( 'timezoneregion-pacific' );
-			asort( $tzRegions );
-
-			$prefill = array_fill_keys( array_values( $tzRegions ), array() );
-			$opt = array_merge( $opt, $prefill );
-
-			$now = date_create( 'now' );
-
-			foreach ( $tzs as $tz ) {
-				$z = explode( '/', $tz, 2 );
-
-				# timezone_identifiers_list() returns a number of
-				# backwards-compatibility entries. This filters them out of the
-				# list presented to the user.
-				if ( count( $z ) != 2 || !array_key_exists( $z[0], $tzRegions ) ) {
-					continue;
-				}
-
-				# Localize region
-				$z[0] = $tzRegions[$z[0]];
-
-				$minDiff = floor( timezone_offset_get( timezone_open( $tz ), $now ) / 60 );
-
-				$display = str_replace( '_', ' ', $z[0] . '/' . $z[1] );
-				$value = "ZoneInfo|$minDiff|$tz";
-
-				$opt[$z[0]][$display] = $value;
+		$timestamp = MWTimestamp::getLocalInstance();
+		// Check that the LocalTZoffset is the same as the local time zone offset
+		if ( $localTZoffset == $timestamp->format( 'Z' ) / 60 ) {
+			$timezoneName = $timestamp->getTimezone()->getName();
+			// Localize timezone
+			if ( isset( $timeZoneList[$timezoneName] ) ) {
+				$timezoneName = $timeZoneList[$timezoneName]['name'];
 			}
+			$server_tz_msg = $context->msg(
+				'timezoneuseserverdefault',
+				$timezoneName
+			)->text();
+		} else {
+			$tzstring = sprintf(
+				'%+03d:%02d',
+				floor( $localTZoffset / 60 ),
+				abs( $localTZoffset ) % 60
+			);
+			$server_tz_msg = $context->msg( 'timezoneuseserverdefault', $tzstring )->text();
+		}
+		$opt[$server_tz_msg] = "System|$localTZoffset";
+		$opt[$context->msg( 'timezoneuseoffset' )->text()] = 'other';
+		$opt[$context->msg( 'guesstimezone' )->text()] = 'guess';
+
+		foreach ( $timeZoneList as $timeZoneInfo ) {
+			$region = $timeZoneInfo['region'];
+			if ( !isset( $opt[$region] ) ) {
+				$opt[$region] = [];
+			}
+			$opt[$region][$timeZoneInfo['name']] = $timeZoneInfo['timecorrection'];
 		}
 		return $opt;
 	}
-	
-	static function filterIntval( $value, $alldata ){
+
+	/**
+	 * @param string $value
+	 * @param array $alldata
+	 * @return int
+	 */
+	static function filterIntval( $value, $alldata ) {
 		return intval( $value );
 	}
 
+	/**
+	 * @param string $tz
+	 * @param array $alldata
+	 * @return string
+	 */
 	static function filterTimezoneInput( $tz, $alldata ) {
 		$data = explode( '|', $tz, 3 );
 		switch ( $data[0] ) {
@@ -1236,23 +1393,36 @@ class Preferences {
 					$data[0] = intval( $data[0] );
 					$data[1] = intval( $data[1] );
 					$minDiff = abs( $data[0] ) * 60 + $data[1];
-					if ( $data[0] < 0 ) $minDiff = - $minDiff;
+					if ( $data[0] < 0 ) {
+						$minDiff = - $minDiff;
+					}
 				} else {
 					$minDiff = intval( $data[0] ) * 60;
 				}
 
 				# Max is +14:00 and min is -12:00, see:
-				# http://en.wikipedia.org/wiki/Timezone
+				# https://en.wikipedia.org/wiki/Timezone
 				$minDiff = min( $minDiff, 840 );  # 14:00
 				$minDiff = max( $minDiff, - 720 ); # -12:00
 				return 'Offset|' . $minDiff;
 		}
 	}
 
-	static function tryFormSubmit( $formData, $entryPoint = 'internal' ) {
-		global $wgUser, $wgEmailAuthentication, $wgEnableEmail;
-
+	/**
+	 * Handle the form submission if everything validated properly
+	 *
+	 * @param array $formData
+	 * @param PreferencesForm $form
+	 * @return bool|Status|string
+	 */
+	static function tryFormSubmit( $formData, $form ) {
+		$user = $form->getModifiedUser();
+		$hiddenPrefs = $form->getConfig()->get( 'HiddenPrefs' );
 		$result = true;
+
+		if ( !$user->isAllowedAny( 'editmyprivateinfo', 'editmyoptions' ) ) {
+			return Status::newFatal( 'mypreferencesprotected' );
+		}
 
 		// Filter input
 		foreach ( array_keys( $formData ) as $name ) {
@@ -1262,140 +1432,255 @@ class Preferences {
 			}
 		}
 
-		// Stuff that shouldn't be saved as a preference.
-		$saveBlacklist = array(
-			'realname',
-			'emailaddress',
-		);
-
-		if ( $wgEnableEmail ) {
-			$newaddr = $formData['emailaddress'];
-			$oldaddr = $wgUser->getEmail();
-			if ( ( $newaddr != '' ) && ( $newaddr != $oldaddr ) ) {
-				# the user has supplied a new email address on the login page
-				# new behaviour: set this new emailaddr from login-page into user database record
-				$wgUser->setEmail( $newaddr );
-				# but flag as "dirty" = unauthenticated
-				$wgUser->invalidateEmail();
-				if ( $wgEmailAuthentication ) {
-					# Mail a temporary password to the dirty address.
-					# User can come back through the confirmation URL to re-enable email.
-					$type = $oldaddr != '' ? 'changed' : 'set';
-					$result = $wgUser->sendConfirmationMail( $type );
-					if ( !$result->isGood() ) {
-						return htmlspecialchars( $result->getWikiText( 'mailerror' ) );
-					} elseif ( $entryPoint == 'ui' ) {
-						$result = 'eauth';
-					}
-				}
-			} else {
-				$wgUser->setEmail( $newaddr );
-			}
-			if ( $oldaddr != $newaddr ) {
-				wfRunHooks( 'PrefsEmailAudit', array( $wgUser, $oldaddr, $newaddr ) );
-			}
-		}
-
 		// Fortunately, the realname field is MUCH simpler
-		global $wgHiddenPrefs;
-		if ( !in_array( 'realname', $wgHiddenPrefs ) ) {
+		// (not really "private", but still shouldn't be edited without permission)
+
+		if ( !in_array( 'realname', $hiddenPrefs )
+			&& $user->isAllowed( 'editmyprivateinfo' )
+			&& array_key_exists( 'realname', $formData )
+		) {
 			$realName = $formData['realname'];
-			$wgUser->setRealName( $realName );
+			$user->setRealName( $realName );
 		}
 
-		foreach ( $saveBlacklist as $b ) {
-			unset( $formData[$b] );
+		if ( $user->isAllowed( 'editmyoptions' ) ) {
+			foreach ( self::$saveBlacklist as $b ) {
+				unset( $formData[$b] );
+			}
+
+			# If users have saved a value for a preference which has subsequently been disabled
+			# via $wgHiddenPrefs, we don't want to destroy that setting in case the preference
+			# is subsequently re-enabled
+			foreach ( $hiddenPrefs as $pref ) {
+				# If the user has not set a non-default value here, the default will be returned
+				# and subsequently discarded
+				$formData[$pref] = $user->getOption( $pref, null, true );
+			}
+
+			// Keep old preferences from interfering due to back-compat code, etc.
+			$user->resetOptions( 'unused', $form->getContext() );
+
+			foreach ( $formData as $key => $value ) {
+				$user->setOption( $key, $value );
+			}
+
+			Hooks::run( 'PreferencesFormPreSave', [ $formData, $form, $user, &$result ] );
 		}
 
-		//  Keeps old preferences from interfering due to back-compat
-		//  code, etc.
-		$wgUser->resetOptions();
-
-		foreach ( $formData as $key => $value ) {
-			$wgUser->setOption( $key, $value );
-		}
-
-		$wgUser->saveSettings();
+		MediaWiki\Auth\AuthManager::callLegacyAuthPlugin( 'updateExternalDB', [ $user ] );
+		$user->saveSettings();
 
 		return $result;
 	}
 
-	public static function tryUISubmit( $formData ) {
-		$res = self::tryFormSubmit( $formData, 'ui' );
+	/**
+	 * @param array $formData
+	 * @param PreferencesForm $form
+	 * @return Status
+	 */
+	public static function tryUISubmit( $formData, $form ) {
+		$res = self::tryFormSubmit( $formData, $form );
 
 		if ( $res ) {
-			$urlOptions = array( 'success' );
+			$urlOptions = [];
 
 			if ( $res === 'eauth' ) {
-				$urlOptions[] = 'eauth';
+				$urlOptions['eauth'] = 1;
 			}
 
-			$queryString = implode( '&', $urlOptions );
+			$urlOptions += $form->getExtraSuccessRedirectParameters();
 
-			$url = SpecialPage::getTitleFor( 'Preferences' )->getFullURL( $queryString );
+			$url = $form->getTitle()->getFullURL( $urlOptions );
 
-			global $wgOut;
-			$wgOut->redirect( $url );
+			$context = $form->getContext();
+			// Set session data for the success message
+			$context->getRequest()->getSession()->set( 'specialPreferencesSaveSuccess', 1 );
+
+			$context->getOutput()->redirect( $url );
 		}
 
 		return Status::newGood();
 	}
 
-	public static function loadOldSearchNs( $user ) {
-		$searchableNamespaces = SearchEngine::searchableNamespaces();
-		// Back compat with old format
-		$arr = array();
+	/**
+	 * Get a list of all time zones
+	 * @param Language $language Language used for the localized names
+	 * @return array A list of all time zones. The system name of the time zone is used as key and
+	 *  the value is an array which contains localized name, the timecorrection value used for
+	 *  preferences and the region
+	 * @since 1.26
+	 */
+	public static function getTimeZoneList( Language $language ) {
+		$identifiers = DateTimeZone::listIdentifiers();
+		if ( $identifiers === false ) {
+			return [];
+		}
+		sort( $identifiers );
 
-		foreach ( $searchableNamespaces as $ns => $name ) {
-			if ( $user->getOption( 'searchNs' . $ns ) ) {
-				$arr[] = $ns;
+		$tzRegions = [
+			'Africa' => wfMessage( 'timezoneregion-africa' )->inLanguage( $language )->text(),
+			'America' => wfMessage( 'timezoneregion-america' )->inLanguage( $language )->text(),
+			'Antarctica' => wfMessage( 'timezoneregion-antarctica' )->inLanguage( $language )->text(),
+			'Arctic' => wfMessage( 'timezoneregion-arctic' )->inLanguage( $language )->text(),
+			'Asia' => wfMessage( 'timezoneregion-asia' )->inLanguage( $language )->text(),
+			'Atlantic' => wfMessage( 'timezoneregion-atlantic' )->inLanguage( $language )->text(),
+			'Australia' => wfMessage( 'timezoneregion-australia' )->inLanguage( $language )->text(),
+			'Europe' => wfMessage( 'timezoneregion-europe' )->inLanguage( $language )->text(),
+			'Indian' => wfMessage( 'timezoneregion-indian' )->inLanguage( $language )->text(),
+			'Pacific' => wfMessage( 'timezoneregion-pacific' )->inLanguage( $language )->text(),
+		];
+		asort( $tzRegions );
+
+		$timeZoneList = [];
+
+		$now = new DateTime();
+
+		foreach ( $identifiers as $identifier ) {
+			$parts = explode( '/', $identifier, 2 );
+
+			// DateTimeZone::listIdentifiers() returns a number of
+			// backwards-compatibility entries. This filters them out of the
+			// list presented to the user.
+			if ( count( $parts ) !== 2 || !array_key_exists( $parts[0], $tzRegions ) ) {
+				continue;
 			}
+
+			// Localize region
+			$parts[0] = $tzRegions[$parts[0]];
+
+			$dateTimeZone = new DateTimeZone( $identifier );
+			$minDiff = floor( $dateTimeZone->getOffset( $now ) / 60 );
+
+			$display = str_replace( '_', ' ', $parts[0] . '/' . $parts[1] );
+			$value = "ZoneInfo|$minDiff|$identifier";
+
+			$timeZoneList[$identifier] = [
+				'name' => $display,
+				'timecorrection' => $value,
+				'region' => $parts[0],
+			];
 		}
 
-		return $arr;
+		return $timeZoneList;
 	}
 }
 
 /** Some tweaks to allow js prefs to work */
 class PreferencesForm extends HTMLForm {
+	// Override default value from HTMLForm
+	protected $mSubSectionBeforeFields = false;
+
+	private $modifiedUser;
+
+	/**
+	 * @param User $user
+	 */
+	public function setModifiedUser( $user ) {
+		$this->modifiedUser = $user;
+	}
+
+	/**
+	 * @return User
+	 */
+	public function getModifiedUser() {
+		if ( $this->modifiedUser === null ) {
+			return $this->getUser();
+		} else {
+			return $this->modifiedUser;
+		}
+	}
+
+	/**
+	 * Get extra parameters for the query string when redirecting after
+	 * successful save.
+	 *
+	 * @return array
+	 */
+	public function getExtraSuccessRedirectParameters() {
+		return [];
+	}
+
+	/**
+	 * @param string $html
+	 * @return string
+	 */
 	function wrapForm( $html ) {
-		$html = Xml::tags( 'div', array( 'id' => 'preferences' ), $html );
+		$html = Xml::tags( 'div', [ 'id' => 'preferences' ], $html );
 
 		return parent::wrapForm( $html );
 	}
 
+	/**
+	 * @return string
+	 */
 	function getButtons() {
+
+		$attrs = [ 'id' => 'mw-prefs-restoreprefs' ];
+
+		if ( !$this->getModifiedUser()->isAllowedAny( 'editmyprivateinfo', 'editmyoptions' ) ) {
+			return '';
+		}
+
 		$html = parent::getButtons();
 
-		global $wgUser;
+		if ( $this->getModifiedUser()->isAllowed( 'editmyoptions' ) ) {
+			$t = SpecialPage::getTitleFor( 'Preferences', 'reset' );
 
-		$sk = $wgUser->getSkin();
-		$t = SpecialPage::getTitleFor( 'Preferences', 'reset' );
+			$html .= "\n" . Linker::link( $t, $this->msg( 'restoreprefs' )->escaped(),
+				Html::buttonAttributes( $attrs, [ 'mw-ui-quiet' ] ) );
 
-		$html .= "\n" . $sk->link( $t, wfMsgHtml( 'restoreprefs' ) );
-
-		$html = Xml::tags( 'div', array( 'class' => 'mw-prefs-buttons' ), $html );
+			$html = Xml::tags( 'div', [ 'class' => 'mw-prefs-buttons' ], $html );
+		}
 
 		return $html;
 	}
 
+	/**
+	 * Separate multi-option preferences into multiple preferences, since we
+	 * have to store them separately
+	 * @param array $data
+	 * @return array
+	 */
 	function filterDataForSubmit( $data ) {
-		// Support for separating MultiSelect preferences into multiple preferences
-		// Due to lack of array support.
 		foreach ( $this->mFlatFields as $fieldname => $field ) {
-			$info = $field->mParams;
-			if ( $field instanceof HTMLMultiSelectField ) {
-				$options = HTMLFormField::flattenOptions( $info['options'] );
+			if ( $field instanceof HTMLNestedFilterable ) {
+				$info = $field->mParams;
 				$prefix = isset( $info['prefix'] ) ? $info['prefix'] : $fieldname;
-
-				foreach ( $options as $opt ) {
-					$data["$prefix$opt"] = in_array( $opt, $data[$fieldname] );
+				foreach ( $field->filterDataForSubmit( $data[$fieldname] ) as $key => $value ) {
+					$data["$prefix$key"] = $value;
 				}
-
 				unset( $data[$fieldname] );
 			}
 		}
 
 		return $data;
+	}
+
+	/**
+	 * Get the whole body of the form.
+	 * @return string
+	 */
+	function getBody() {
+		return $this->displaySection( $this->mFieldTree, '', 'mw-prefsection-' );
+	}
+
+	/**
+	 * Get the "<legend>" for a given section key. Normally this is the
+	 * prefs-$key message but we'll allow extensions to override it.
+	 * @param string $key
+	 * @return string
+	 */
+	function getLegend( $key ) {
+		$legend = parent::getLegend( $key );
+		Hooks::run( 'PreferencesGetLegend', [ $this, $key, &$legend ] );
+		return $legend;
+	}
+
+	/**
+	 * Get the keys of each top level preference section.
+	 * @return array of section keys
+	 */
+	function getPreferenceSections() {
+		return array_keys( array_filter( $this->mFieldTree, 'is_array' ) );
 	}
 }

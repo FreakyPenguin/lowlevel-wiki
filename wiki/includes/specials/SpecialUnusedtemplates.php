@@ -30,50 +30,68 @@
  * @ingroup SpecialPage
  */
 class UnusedtemplatesPage extends QueryPage {
-
-	function getName() { return( 'Unusedtemplates' ); }
-	function isExpensive() { return true; }
-	function isSyndicated() { return false; }
-	function sortDescending() { return false; }
-
-	function getSQL() {
-		$dbr = wfGetDB( DB_SLAVE );
-		list( $page, $templatelinks) = $dbr->tableNamesN( 'page', 'templatelinks' );
-		$sql = "SELECT 'Unusedtemplates' AS type, page_title AS title,
-			page_namespace AS namespace, 0 AS value
-			FROM $page
-			LEFT JOIN $templatelinks
-			ON page_namespace = tl_namespace AND page_title = tl_title
-			WHERE page_namespace = 10 AND tl_from IS NULL
-			AND page_is_redirect = 0";
-		return $sql;
+	function __construct( $name = 'Unusedtemplates' ) {
+		parent::__construct( $name );
 	}
 
+	public function isExpensive() {
+		return true;
+	}
+
+	function isSyndicated() {
+		return false;
+	}
+
+	function sortDescending() {
+		return false;
+	}
+
+	public function getQueryInfo() {
+		return [
+			'tables' => [ 'page', 'templatelinks' ],
+			'fields' => [
+				'namespace' => 'page_namespace',
+				'title' => 'page_title',
+				'value' => 'page_title'
+			],
+			'conds' => [
+				'page_namespace' => NS_TEMPLATE,
+				'tl_from IS NULL',
+				'page_is_redirect' => 0
+			],
+			'join_conds' => [ 'templatelinks' => [
+				'LEFT JOIN', [ 'tl_title = page_title',
+					'tl_namespace = page_namespace' ] ] ]
+		];
+	}
+
+	/**
+	 * @param Skin $skin
+	 * @param object $result Result row
+	 * @return string
+	 */
 	function formatResult( $skin, $result ) {
+		$linkRenderer = $this->getLinkRenderer();
 		$title = Title::makeTitle( NS_TEMPLATE, $result->title );
-		$pageLink = $skin->linkKnown(
+		$pageLink = $linkRenderer->makeKnownLink(
 			$title,
 			null,
-			array(),
-			array( 'redirect' => 'no' )
+			[],
+			[ 'redirect' => 'no' ]
 		);
-		$wlhLink = $skin->linkKnown(
-			SpecialPage::getTitleFor( 'Whatlinkshere' ),
-			wfMsgHtml( 'unusedtemplateswlh' ),
-			array(),
-			array( 'target' => $title->getPrefixedText() )
+		$wlhLink = $linkRenderer->makeKnownLink(
+			SpecialPage::getTitleFor( 'Whatlinkshere', $title->getPrefixedText() ),
+			$this->msg( 'unusedtemplateswlh' )->text()
 		);
-		return wfSpecialList( $pageLink, $wlhLink );
+
+		return $this->getLanguage()->specialList( $pageLink, $wlhLink );
 	}
 
 	function getPageHeader() {
-		return wfMsgExt( 'unusedtemplatestext', array( 'parse' ) );
+		return $this->msg( 'unusedtemplatestext' )->parseAsBlock();
 	}
 
-}
-
-function wfSpecialUnusedtemplates() {
-	list( $limit, $offset ) = wfCheckLimits();
-	$utp = new UnusedtemplatesPage();
-	$utp->doQuery( $offset, $limit );
+	protected function getGroupName() {
+		return 'maintenance';
+	}
 }

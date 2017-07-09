@@ -20,234 +20,64 @@
  * @file
  * @ingroup SpecialPage
  */
- 
-function wfSpecialListfiles( $par = null ) {
-	global $wgOut;
 
-	$pager = new ImageListPager( $par );
+class SpecialListFiles extends IncludableSpecialPage {
+	public function __construct() {
+		parent::__construct( 'Listfiles' );
+	}
 
-	$limit = $pager->getForm();
-	$body = $pager->getBody();
-	$nav = $pager->getNavigationBar();
-	$wgOut->addHTML( "$limit<br />\n$body<br />\n$nav" );
-}
+	public function execute( $par ) {
+		$this->setHeaders();
+		$this->outputHeader();
 
-/**
- * @ingroup SpecialPage Pager
- */
-class ImageListPager extends TablePager {
-	var $mFieldNames = null;
-	var $mQueryConds = array();
-	var $mUserName = null;
-	
-	function __construct( $par = null ) {
-		global $wgRequest, $wgMiserMode;
-		if ( $wgRequest->getText( 'sort', 'img_date' ) == 'img_date' ) {
-			$this->mDefaultDirection = true;
+		if ( $this->including() ) {
+			$userName = $par;
+			$search = '';
+			$showAll = false;
 		} else {
-			$this->mDefaultDirection = false;
-		}
-		
-		$userName = $wgRequest->getText( 'user', $par );
-		if ( $userName ) {
-			$nt = Title::newFromText( $userName, NS_USER );
-			if ( !is_null( $nt ) ) {
-				$this->mUserName = $nt->getText();
-				$this->mQueryConds['img_user_text'] = $this->mUserName;
-			}
-		} 
-		
-		$search = $wgRequest->getText( 'ilsearch' );
-		if ( $search != '' && !$wgMiserMode ) {
-			$nt = Title::newFromURL( $search );
-			if ( $nt ) {
-				$dbr = wfGetDB( DB_SLAVE );
-				$this->mQueryConds[] = 'LOWER(img_name)' . $dbr->buildLike( $dbr->anyString(), 
-					strtolower( $nt->getDBkey() ), $dbr->anyString() );
-			}
+			$userName = $this->getRequest()->getText( 'user', $par );
+			$search = $this->getRequest()->getText( 'ilsearch', '' );
+			$showAll = $this->getRequest()->getBool( 'ilshowall', false );
 		}
 
-		parent::__construct();
-	}
-
-	function getFieldNames() {
-		if ( !$this->mFieldNames ) {
-			global $wgMiserMode;
-			$this->mFieldNames = array(
-				'thumb' => wfMsg( 'listfiles_thumb' ),
-				'img_timestamp' => wfMsg( 'listfiles_date' ),
-				'img_name' => wfMsg( 'listfiles_name' ),
-				'img_user_text' => wfMsg( 'listfiles_user' ),
-				'img_size' => wfMsg( 'listfiles_size' ),
-				'img_description' => wfMsg( 'listfiles_description' ),
-			);
-			if( !$wgMiserMode ) {
-				$this->mFieldNames['count'] = wfMsg( 'listfiles_count' );
-			}
-		}
-		return $this->mFieldNames;
-	}
-
-	function isFieldSortable( $field ) {
-		static $sortable = array( 'img_timestamp', 'img_name' );
-		if ( $field == 'img_size' ) {
-			# No index for both img_size and img_user_text
-			return !isset( $this->mQueryConds['img_user_text'] );
-		}
-		return in_array( $field, $sortable );
-	}
-
-	function getQueryInfo() {
-		$tables = array( 'image' );
-		$fields = array_keys( $this->getFieldNames() );
-		$fields[] = 'img_user';
-		$fields[array_search('thumb', $fields)] = 'img_name as thumb';
-		$options = $join_conds = array();
-
-		# Depends on $wgMiserMode
-		if( isset( $this->mFieldNames['count'] ) ) {
-			$tables[] = 'oldimage';
-
-			# Need to rewrite this one
-			foreach ( $fields as &$field ) {
-				if ( $field == 'count' ) {
-					$field = 'COUNT(oi_archive_name) as count';
-				}
-			}
-			unset( $field );
-
-			$dbr = wfGetDB( DB_SLAVE );
-			if( $dbr->implicitGroupby() ) {
-				$options = array( 'GROUP BY' => 'img_name' );
-			} else {
-				$columnlist = implode( ',', preg_grep( '/^img/', array_keys( $this->getFieldNames() ) ) );
-				$options = array( 'GROUP BY' => "img_user, $columnlist" );
-			}
-			$join_conds = array( 'oldimage' => array( 'LEFT JOIN', 'oi_name = img_name' ) );
-		}
-		return array(
-			'tables'     => $tables,
-			'fields'     => $fields,
-			'conds'      => $this->mQueryConds,
-			'options'    => $options,
-			'join_conds' => $join_conds
+		$pager = new ImageListPager(
+			$this->getContext(),
+			$userName,
+			$search,
+			$this->including(),
+			$showAll
 		);
-	}
 
-	function getDefaultSort() {
-		return 'img_timestamp';
-	}
-
-	function getStartBody() {
-		# Do a link batch query for user pages
-		if ( $this->mResult->numRows() ) {
-			$lb = new LinkBatch;
-			$this->mResult->seek( 0 );
-			foreach ( $this->mResult as $row ) {
-				if ( $row->img_user ) {
-					$lb->add( NS_USER, str_replace( ' ', '_', $row->img_user_text ) );
-				}
-			}
-			$lb->execute();
-		}
-
-		return parent::getStartBody();
-	}
-
-	function formatValue( $field, $value ) {
-		global $wgLang;
-		switch ( $field ) {
-			case 'thumb':
-				$file = wfLocalFile( $value );
-				$thumb = $file->transform( array( 'width' => 180 ) );
-				return $thumb->toHtml( array( 'desc-link' => true ) );
-			case 'img_timestamp':
-				return htmlspecialchars( $wgLang->timeanddate( $value, true ) );
-			case 'img_name':
-				static $imgfile = null;
-				if ( $imgfile === null ) $imgfile = wfMsg( 'imgfile' );
-
-				$filePage = Title::makeTitle( NS_FILE, $value );
-				$link = $this->getSkin()->linkKnown( $filePage, htmlspecialchars( $filePage->getText() ) );
-				$image = wfLocalFile( $value );
-				$url = $image->getURL();
-				$download = Xml::element('a', array( 'href' => $url ), $imgfile );
-				return "$link ($download)";
-			case 'img_user_text':
-				if ( $this->mCurrentRow->img_user ) {
-					$link = $this->getSkin()->link(
-						Title::makeTitle( NS_USER, $value ),
-						htmlspecialchars( $value )
-					);
-				} else {
-					$link = htmlspecialchars( $value );
-				}
-				return $link;
-			case 'img_size':
-				return $this->getSkin()->formatSize( $value );
-			case 'img_description':
-				return $this->getSkin()->commentBlock( $value );
-			case 'count':
-				return intval($value)+1;
+		$out = $this->getOutput();
+		if ( $this->including() ) {
+			$out->addParserOutputContent( $pager->getBodyOutput() );
+		} else {
+			$user = $pager->getRelevantUser();
+			$this->getSkin()->setRelevantUser( $user );
+			$pager->getForm();
+			$out->addParserOutputContent( $pager->getFullOutput() );
 		}
 	}
 
-	function getForm() {
-		global $wgRequest, $wgScript, $wgMiserMode;
-		$search = $wgRequest->getText( 'ilsearch' );
-		$inputForm = array();
-		$inputForm['table_pager_limit_label'] = $this->getLimitSelect();
-		if ( !$wgMiserMode ) {
-			$inputForm['listfiles_search_for'] = Html::input( 'ilsearch', $search, 'text', array(
-								'size' => '40',
-								'maxlength' => '255',
-								'id' => 'mw-ilsearch',
-			) );
+	/**
+	 * Return an array of subpages beginning with $search that this special page will accept.
+	 *
+	 * @param string $search Prefix to search for
+	 * @param int $limit Maximum number of results to return (usually 10)
+	 * @param int $offset Number of results to skip (usually 0)
+	 * @return string[] Matching subpages
+	 */
+	public function prefixSearchSubpages( $search, $limit, $offset ) {
+		$user = User::newFromName( $search );
+		if ( !$user ) {
+			// No prefix suggestion for invalid user
+			return [];
 		}
-		$inputForm['username'] = Html::input( 'user', $this->mUserName, 'text', array(
-						'size' => '40',
-						'maxlength' => '255',
-						'id' => 'mw-listfiles-user',
-		) );
-		$s = Html::openElement( 'form', array( 'method' => 'get', 'action' => $wgScript, 'id' => 'mw-listfiles-form' ) ) .
-			Xml::fieldset( wfMsg( 'listfiles' ) ) .
-			Xml::buildForm( $inputForm, 'table_pager_limit_submit' ) .
-			$this->getHiddenFields( array( 'limit', 'ilsearch', 'user' ) ) .
-			Html::closeElement( 'fieldset' ) .
-			Html::closeElement( 'form' ) . "\n";
-		return $s;
+		// Autocomplete subpage as user list - public to allow caching
+		return UserNamePrefixSearch::search( 'public', $search, $limit, $offset );
 	}
 
-	function getTableClass() {
-		return 'listfiles ' . parent::getTableClass();
-	}
-
-	function getNavClass() {
-		return 'listfiles_nav ' . parent::getNavClass();
-	}
-
-	function getSortHeaderClass() {
-		return 'listfiles_sort ' . parent::getSortHeaderClass();
-	}
-	
-	function getPagingQueries() {
-		$queries = parent::getPagingQueries();
-		if ( !is_null( $this->mUserName ) ) {
-			# Append the username to the query string
-			foreach ( $queries as &$query ) {
-				$query['user'] = $this->mUserName;
-			}
-		}
-		return $queries;
-	}
-
-	function getDefaultQuery() {
-		$queries = parent::getDefaultQuery();
-		if ( !isset( $queries['user'] )
-			&& !is_null( $this->mUserName ) )
-		{
-			$queries['user'] = $this->mUserName;
-		}
-		return $queries;
+	protected function getGroupName() {
+		return 'media';
 	}
 }

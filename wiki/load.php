@@ -1,6 +1,6 @@
 <?php
 /**
- * This file is the entry point for the resource loader.
+ * This file is the entry point for ResourceLoader.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,23 +20,39 @@
  * @file
  * @author Roan Kattouw
  * @author Trevor Parscal
- *
  */
 
-require ( dirname( __FILE__ ) . '/includes/WebStart.php' );
-wfProfileIn( 'load.php' );
+use MediaWiki\Logger\LoggerFactory;
+use MediaWiki\MediaWikiServices;
+
+// This endpoint is supposed to be independent of request cookies and other
+// details of the session. Enforce this constraint with respect to session use.
+define( 'MW_NO_SESSION', 1 );
+
+require __DIR__ . '/includes/WebStart.php';
 
 // URL safety checks
 if ( !$wgRequest->checkUrlExtension() ) {
 	return;
 }
 
-// Respond to resource loading request
-$resourceLoader = new ResourceLoader();
-$resourceLoader->respond( new ResourceLoaderContext( $resourceLoader, $wgRequest ) );
+// Don't initialise ChronologyProtector from object cache, and
+// don't wait for unrelated MediaWiki writes when querying ResourceLoader.
+MediaWikiServices::getInstance()->getDBLoadBalancerFactory()->setRequestInfo( [
+	'ChronologyProtection' => 'false',
+] );
 
-wfProfileOut( 'load.php' );
-wfLogProfilingData();
+// Set up ResourceLoader
+$resourceLoader = new ResourceLoader(
+	ConfigFactory::getDefaultInstance()->makeConfig( 'main' ),
+	LoggerFactory::getInstance( 'resourceloader' )
+);
+$context = new ResourceLoaderContext( $resourceLoader, $wgRequest );
 
-// Shut down the database
-wfGetLBFactory()->shutdown();
+// Respond to ResourceLoader request
+$resourceLoader->respond( $context );
+
+Profiler::instance()->setTemplated( true );
+
+$mediawiki = new MediaWiki();
+$mediawiki->doPostOutputShutdown( 'fast' );

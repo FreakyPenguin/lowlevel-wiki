@@ -26,11 +26,11 @@
  * Special page lists images which haven't been categorised
  *
  * @ingroup SpecialPage
+ * @todo FIXME: Use an instance of UncategorizedPagesPage or something
  */
 class UncategorizedImagesPage extends ImageQueryPage {
-
-	function getName() {
-		return 'Uncategorizedimages';
+	function __construct( $name = 'Uncategorizedimages' ) {
+		parent::__construct( $name );
 	}
 
 	function sortDescending() {
@@ -45,21 +45,21 @@ class UncategorizedImagesPage extends ImageQueryPage {
 		return false;
 	}
 
-	function getSQL() {
-		$dbr = wfGetDB( DB_SLAVE );
-		list( $page, $categorylinks ) = $dbr->tableNamesN( 'page', 'categorylinks' );
-		$ns = NS_FILE;
-
-		return "SELECT 'Uncategorizedimages' AS type, page_namespace AS namespace,
-				page_title AS title, page_title AS value
-				FROM {$page} LEFT JOIN {$categorylinks} ON page_id = cl_from
-				WHERE cl_from IS NULL AND page_namespace = {$ns} AND page_is_redirect = 0";
+	function getQueryInfo() {
+		return [
+			'tables' => [ 'page', 'categorylinks' ],
+			'fields' => [ 'namespace' => 'page_namespace',
+				'title' => 'page_title',
+				'value' => 'page_title' ],
+			'conds' => [ 'cl_from IS NULL',
+				'page_namespace' => NS_FILE,
+				'page_is_redirect' => 0 ],
+			'join_conds' => [ 'categorylinks' => [
+				'LEFT JOIN', 'cl_from=page_id' ] ]
+		];
 	}
 
-}
-
-function wfSpecialUncategorizedimages() {
-	$uip = new UncategorizedImagesPage();
-	list( $limit, $offset ) = wfCheckLimits();
-	return $uip->doQuery( $offset, $limit );
+	protected function getGroupName() {
+		return 'maintenance';
+	}
 }

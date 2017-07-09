@@ -2,7 +2,7 @@
 define mw_prefix='{$wgDBprefix}';
 
 
-CREATE SEQUENCE user_user_id_seq MINVALUE 0 START WITH 0;
+CREATE SEQUENCE user_user_id_seq;
 CREATE TABLE &mw_prefix.mwuser ( -- replace reserved word 'user'
   user_id                   NUMBER  NOT NULL,
   user_name                 VARCHAR2(255)     NOT NULL,
@@ -18,23 +18,33 @@ CREATE TABLE &mw_prefix.mwuser ( -- replace reserved word 'user'
   user_options              CLOB,
   user_touched              TIMESTAMP(6) WITH TIME ZONE,
   user_registration         TIMESTAMP(6) WITH TIME ZONE,
-  user_editcount            NUMBER
+  user_editcount            NUMBER,
+  user_password_expires     TIMESTAMP(6) WITH TIME ZONE
 );
 ALTER TABLE &mw_prefix.mwuser ADD CONSTRAINT &mw_prefix.mwuser_pk PRIMARY KEY (user_id);
 CREATE UNIQUE INDEX &mw_prefix.mwuser_u01 ON &mw_prefix.mwuser (user_name);
 CREATE INDEX &mw_prefix.mwuser_i01 ON &mw_prefix.mwuser (user_email_token);
+CREATE INDEX &mw_prefix.mwuser_i02 ON &mw_prefix.mwuser (user_email, user_name);
 
 -- Create a dummy user to satisfy fk contraints especially with revisions
 INSERT INTO &mw_prefix.mwuser
-  VALUES (user_user_id_seq.nextval,'Anonymous',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL, '', current_timestamp, current_timestamp, 0);
+  (user_id, user_name, user_options, user_touched, user_registration, user_editcount)
+  VALUES (0,'Anonymous','', current_timestamp, current_timestamp,0);
 
 CREATE TABLE &mw_prefix.user_groups (
   ug_user   NUMBER      DEFAULT 0 NOT NULL,
-  ug_group  VARCHAR2(16)     NOT NULL
+  ug_group  VARCHAR2(255)     NOT NULL
 );
 ALTER TABLE &mw_prefix.user_groups ADD CONSTRAINT &mw_prefix.user_groups_fk1 FOREIGN KEY (ug_user) REFERENCES &mw_prefix.mwuser(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 CREATE UNIQUE INDEX &mw_prefix.user_groups_u01 ON &mw_prefix.user_groups (ug_user,ug_group);
 CREATE INDEX &mw_prefix.user_groups_i01 ON &mw_prefix.user_groups (ug_group);
+
+CREATE TABLE &mw_prefix.user_former_groups (
+  ufg_user   NUMBER      DEFAULT 0 NOT NULL,
+  ufg_group  VARCHAR2(255)     NOT NULL
+);
+ALTER TABLE &mw_prefix.user_former_groups ADD CONSTRAINT &mw_prefix.user_former_groups_fk1 FOREIGN KEY (ufg_user) REFERENCES &mw_prefix.mwuser(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+CREATE UNIQUE INDEX &mw_prefix.user_former_groups_u01 ON &mw_prefix.user_former_groups (ufg_user,ufg_group);
 
 CREATE TABLE &mw_prefix.user_newtalk (
   user_id  NUMBER DEFAULT 0 NOT NULL,
@@ -47,7 +57,7 @@ CREATE INDEX &mw_prefix.user_newtalk_i02 ON &mw_prefix.user_newtalk (user_ip);
 
 CREATE TABLE &mw_prefix.user_properties (
   up_user NUMBER NOT NULL,
-  up_property VARCHAR2(32) NOT NULL,
+  up_property VARCHAR2(255) NOT NULL,
   up_value CLOB
 );
 CREATE UNIQUE INDEX &mw_prefix.user_properties_u01 on &mw_prefix.user_properties (up_user,up_property);
@@ -59,22 +69,25 @@ CREATE TABLE &mw_prefix.page (
   page_namespace     NUMBER       DEFAULT 0 NOT NULL,
   page_title         VARCHAR2(255)           NOT NULL,
   page_restrictions  VARCHAR2(255),
-  page_counter       NUMBER         DEFAULT 0 NOT NULL,
   page_is_redirect   CHAR(1)           DEFAULT '0' NOT NULL,
   page_is_new        CHAR(1)           DEFAULT '0' NOT NULL,
   page_random        NUMBER(15,14) NOT NULL,
   page_touched       TIMESTAMP(6) WITH TIME ZONE,
+  page_links_updated TIMESTAMP(6) WITH TIME ZONE,
   page_latest        NUMBER        DEFAULT 0 NOT NULL, -- FK?
-  page_len           NUMBER        DEFAULT 0 NOT NULL
+  page_len           NUMBER        DEFAULT 0 NOT NULL,
+  page_content_model VARCHAR2(32),
+  page_lang VARCHAR2(35) DEFAULT NULL
 );
 ALTER TABLE &mw_prefix.page ADD CONSTRAINT &mw_prefix.page_pk PRIMARY KEY (page_id);
 CREATE UNIQUE INDEX &mw_prefix.page_u01 ON &mw_prefix.page (page_namespace,page_title);
 CREATE INDEX &mw_prefix.page_i01 ON &mw_prefix.page (page_random);
 CREATE INDEX &mw_prefix.page_i02 ON &mw_prefix.page (page_len);
+CREATE INDEX &mw_prefix.page_i03 ON &mw_prefix.page (page_is_redirect, page_namespace, page_len);
 
 -- Create a dummy page to satisfy fk contraints especially with revisions
 INSERT INTO &mw_prefix.page
-  VALUES (0, 0, ' ', NULL, 0, 0, 0, 0, current_timestamp, 0, 0);
+  VALUES (0, 0, ' ', NULL, 0, 0, 0, current_timestamp, NULL, 0, 0, NULL, NULL);
 
 /*$mw$*/
 CREATE TRIGGER &mw_prefix.page_set_random BEFORE INSERT ON &mw_prefix.page
@@ -96,7 +109,10 @@ CREATE TABLE &mw_prefix.revision (
   rev_minor_edit  CHAR(1)         DEFAULT '0' NOT NULL,
   rev_deleted     CHAR(1)         DEFAULT '0' NOT NULL,
   rev_len         NUMBER          NULL,
-  rev_parent_id   NUMBER      	   DEFAULT NULL
+  rev_parent_id   NUMBER      	   DEFAULT NULL,
+  rev_sha1		  VARCHAR2(32)    NULL,
+  rev_content_model VARCHAR2(32),
+  rev_content_format VARCHAR2(64)
 );
 ALTER TABLE &mw_prefix.revision ADD CONSTRAINT &mw_prefix.revision_pk PRIMARY KEY (rev_id);
 ALTER TABLE &mw_prefix.revision ADD CONSTRAINT &mw_prefix.revision_fk1 FOREIGN KEY (rev_page) REFERENCES &mw_prefix.page(page_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
@@ -106,6 +122,7 @@ CREATE INDEX &mw_prefix.revision_i01 ON &mw_prefix.revision (rev_timestamp);
 CREATE INDEX &mw_prefix.revision_i02 ON &mw_prefix.revision (rev_page,rev_timestamp);
 CREATE INDEX &mw_prefix.revision_i03 ON &mw_prefix.revision (rev_user,rev_timestamp);
 CREATE INDEX &mw_prefix.revision_i04 ON &mw_prefix.revision (rev_user_text,rev_timestamp);
+CREATE INDEX &mw_prefix.revision_i05 ON &mw_prefix.revision (rev_page,rev_user,rev_timestamp);
 
 CREATE SEQUENCE text_old_id_seq;
 CREATE TABLE &mw_prefix.pagecontent ( -- replaces reserved word 'text'
@@ -115,7 +132,9 @@ CREATE TABLE &mw_prefix.pagecontent ( -- replaces reserved word 'text'
 );
 ALTER TABLE &mw_prefix.pagecontent ADD CONSTRAINT &mw_prefix.pagecontent_pk PRIMARY KEY (old_id);
 
+CREATE SEQUENCE archive_ar_id_seq;
 CREATE TABLE &mw_prefix.archive (
+  ar_id          NUMBER NOT NULL,
   ar_namespace   NUMBER    DEFAULT 0 NOT NULL,
   ar_title       VARCHAR2(255)         NOT NULL,
   ar_text        CLOB,
@@ -130,8 +149,12 @@ CREATE TABLE &mw_prefix.archive (
   ar_deleted     CHAR(1)      DEFAULT '0' NOT NULL,
   ar_len         NUMBER,
   ar_page_id     NUMBER,
-  ar_parent_id   NUMBER
+  ar_parent_id   NUMBER,
+  ar_sha1		  VARCHAR2(32),
+  ar_content_model VARCHAR2(32),
+  ar_content_format VARCHAR2(64)
 );
+ALTER TABLE &mw_prefix.archive ADD CONSTRAINT &mw_prefix.archive_pk PRIMARY KEY (ar_id);
 ALTER TABLE &mw_prefix.archive ADD CONSTRAINT &mw_prefix.archive_fk1 FOREIGN KEY (ar_user) REFERENCES &mw_prefix.mwuser(user_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
 CREATE INDEX &mw_prefix.archive_i01 ON &mw_prefix.archive (ar_namespace,ar_title,ar_timestamp);
 CREATE INDEX &mw_prefix.archive_i02 ON &mw_prefix.archive (ar_user_text,ar_timestamp);
@@ -185,29 +208,24 @@ CREATE TABLE &mw_prefix.category (
   cat_title VARCHAR2(255) NOT NULL,
   cat_pages NUMBER DEFAULT 0 NOT NULL,
   cat_subcats NUMBER DEFAULT 0 NOT NULL,
-  cat_files NUMBER DEFAULT 0 NOT NULL,
-  cat_hidden NUMBER DEFAULT 0 NOT NULL
+  cat_files NUMBER DEFAULT 0 NOT NULL
 );
 ALTER TABLE &mw_prefix.category ADD CONSTRAINT &mw_prefix.category_pk PRIMARY KEY (cat_id);
 CREATE UNIQUE INDEX &mw_prefix.category_u01 ON &mw_prefix.category (cat_title);
 CREATE INDEX &mw_prefix.category_i01 ON &mw_prefix.category (cat_pages);
 
+CREATE SEQUENCE externallinks_el_id_seq;
 CREATE TABLE &mw_prefix.externallinks (
+  el_id     NUMBER  NOT NULL,
   el_from   NUMBER  NOT NULL,
   el_to     VARCHAR2(2048) NOT NULL,
   el_index  VARCHAR2(2048) NOT NULL
 );
+ALTER TABLE &mw_prefix.externallinks ADD CONSTRAINT &mw_prefix.externallinks_pk PRIMARY KEY (el_id);
 ALTER TABLE &mw_prefix.externallinks ADD CONSTRAINT &mw_prefix.externallinks_fk1 FOREIGN KEY (el_from) REFERENCES &mw_prefix.page(page_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 CREATE INDEX &mw_prefix.externallinks_i01 ON &mw_prefix.externallinks (el_from, el_to);
 CREATE INDEX &mw_prefix.externallinks_i02 ON &mw_prefix.externallinks (el_to, el_from);
 CREATE INDEX &mw_prefix.externallinks_i03 ON &mw_prefix.externallinks (el_index);
-
-CREATE TABLE &mw_prefix.external_user (
-  eu_local_id NUMBER NOT NULL,
-  eu_external_id varchar2(255) NOT NULL
-);
-ALTER TABLE &mw_prefix.external_user ADD CONSTRAINT &mw_prefix.external_user_pk PRIMARY KEY (eu_local_id);
-CREATE UNIQUE INDEX &mw_prefix.external_user_u01 ON &mw_prefix.external_user (eu_external_id);
 
 CREATE TABLE &mw_prefix.langlinks (
   ll_from    NUMBER  NOT NULL,
@@ -228,20 +246,14 @@ CREATE UNIQUE INDEX &mw_prefix.iwlinks_ui02 ON &mw_prefix.iwlinks (iwl_prefix, i
 
 CREATE TABLE &mw_prefix.site_stats (
   ss_row_id         NUMBER  NOT NULL ,
-  ss_total_views    NUMBER            DEFAULT 0,
   ss_total_edits    NUMBER            DEFAULT 0,
   ss_good_articles  NUMBER            DEFAULT 0,
   ss_total_pages    NUMBER            DEFAULT -1,
   ss_users          NUMBER            DEFAULT -1,
   ss_active_users   NUMBER            DEFAULT -1,
-  ss_admins         NUMBER            DEFAULT -1,
   ss_images         NUMBER            DEFAULT 0
 );
 CREATE UNIQUE INDEX &mw_prefix.site_stats_u01 ON &mw_prefix.site_stats (ss_row_id);
-
-CREATE TABLE &mw_prefix.hitcounter (
-  hc_id  NUMBER  NOT NULL
-);
 
 CREATE SEQUENCE ipblocks_ipb_id_seq;
 CREATE TABLE &mw_prefix.ipblocks (
@@ -249,7 +261,7 @@ CREATE TABLE &mw_prefix.ipblocks (
   ipb_address           VARCHAR2(255)     NULL,
   ipb_user              NUMBER      DEFAULT 0 NOT  NULL,
   ipb_by                NUMBER      DEFAULT 0 NOT NULL,
-  ipb_by_text           VARCHAR2(255)      NOT NULL,
+  ipb_by_text           VARCHAR2(255)      NULL,
   ipb_reason            VARCHAR2(255)         NOT NULL,
   ipb_timestamp         TIMESTAMP(6) WITH TIME ZONE  NOT NULL,
   ipb_auto              CHAR(1)         DEFAULT '0' NOT NULL,
@@ -261,7 +273,8 @@ CREATE TABLE &mw_prefix.ipblocks (
   ipb_range_end         VARCHAR2(255),
   ipb_deleted           CHAR(1)      DEFAULT '0' NOT NULL,
   ipb_block_email       CHAR(1)      DEFAULT '0' NOT NULL,
-  ipb_allow_usertalk    CHAR(1)      DEFAULT '0' NOT NULL
+  ipb_allow_usertalk    CHAR(1)      DEFAULT '0' NOT NULL,
+  ipb_parent_block_id             NUMBER       DEFAULT NULL
 );
 ALTER TABLE &mw_prefix.ipblocks ADD CONSTRAINT &mw_prefix.ipblocks_pk PRIMARY KEY (ipb_id);
 ALTER TABLE &mw_prefix.ipblocks ADD CONSTRAINT &mw_prefix.ipblocks_fk1 FOREIGN KEY (ipb_user) REFERENCES &mw_prefix.mwuser(user_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
@@ -271,6 +284,7 @@ CREATE INDEX &mw_prefix.ipblocks_i01 ON &mw_prefix.ipblocks (ipb_user);
 CREATE INDEX &mw_prefix.ipblocks_i02 ON &mw_prefix.ipblocks (ipb_range_start, ipb_range_end);
 CREATE INDEX &mw_prefix.ipblocks_i03 ON &mw_prefix.ipblocks (ipb_timestamp);
 CREATE INDEX &mw_prefix.ipblocks_i04 ON &mw_prefix.ipblocks (ipb_expiry);
+CREATE INDEX &mw_prefix.ipblocks_i05 ON &mw_prefix.ipblocks (ipb_parent_block_id);
 
 CREATE TABLE &mw_prefix.image (
   img_name         VARCHAR2(255)      NOT NULL,
@@ -344,7 +358,8 @@ CREATE TABLE &mw_prefix.filearchive (
   fa_user               NUMBER          DEFAULT 0 NOT NULL,
   fa_user_text          VARCHAR2(255)         NOT NULL,
   fa_timestamp          TIMESTAMP(6) WITH TIME ZONE,
-  fa_deleted            NUMBER      DEFAULT 0 NOT NULL
+  fa_deleted            NUMBER      DEFAULT 0 NOT NULL,
+  fa_sha1		VARCHAR2(32)
 );
 ALTER TABLE &mw_prefix.filearchive ADD CONSTRAINT &mw_prefix.filearchive_pk PRIMARY KEY (fa_id);
 ALTER TABLE &mw_prefix.filearchive ADD CONSTRAINT &mw_prefix.filearchive_fk1 FOREIGN KEY (fa_deleted_user) REFERENCES &mw_prefix.mwuser(user_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
@@ -353,12 +368,39 @@ CREATE INDEX &mw_prefix.filearchive_i01 ON &mw_prefix.filearchive (fa_name, fa_t
 CREATE INDEX &mw_prefix.filearchive_i02 ON &mw_prefix.filearchive (fa_storage_group, fa_storage_key);
 CREATE INDEX &mw_prefix.filearchive_i03 ON &mw_prefix.filearchive (fa_deleted_timestamp);
 CREATE INDEX &mw_prefix.filearchive_i04 ON &mw_prefix.filearchive (fa_user_text,fa_timestamp);
+CREATE INDEX &mw_prefix.filearchive_i05 ON &mw_prefix.filearchive (fa_sha1);
+
+CREATE SEQUENCE uploadstash_us_id_seq;
+CREATE TABLE &mw_prefix.uploadstash (
+	us_id                 NUMBER       NOT NULL,
+  us_user               NUMBER          DEFAULT 0 NOT NULL,
+	us_key								VARCHAR2(255) NOT NULL,
+	us_orig_path 					VARCHAR2(255) NOT NULL,
+	us_path								VARCHAR2(255) NOT NULL,
+	us_source_type				VARCHAR2(50),
+  us_timestamp          TIMESTAMP(6) WITH TIME ZONE,
+	us_status							VARCHAR2(50) NOT NULL,
+	us_chunk_inx						NUMBER,
+	us_size								NUMBER NOT NULL,
+	us_sha1								VARCHAR2(32) NOT NULL,
+	us_mime								VARCHAR2(255),
+  us_media_type         VARCHAR2(32) DEFAULT NULL,
+	us_image_width				NUMBER,
+	us_image_height				NUMBER,
+	us_image_bits					NUMBER,
+  us_props BLOB
+);
+ALTER TABLE &mw_prefix.uploadstash ADD CONSTRAINT &mw_prefix.uploadstash_pk PRIMARY KEY (us_id);
+ALTER TABLE &mw_prefix.uploadstash ADD CONSTRAINT &mw_prefix.uploadstash_fk1 FOREIGN KEY (us_user) REFERENCES &mw_prefix.mwuser(user_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+CREATE INDEX &mw_prefix.uploadstash_i01 ON &mw_prefix.uploadstash (us_user);
+CREATE INDEX &mw_prefix.uploadstash_i02 ON &mw_prefix.uploadstash (us_timestamp);
+CREATE UNIQUE INDEX &mw_prefix.uploadstash_u01 ON &mw_prefix.uploadstash (us_key);
 
 CREATE SEQUENCE recentchanges_rc_id_seq;
 CREATE TABLE &mw_prefix.recentchanges (
   rc_id              NUMBER      NOT NULL,
   rc_timestamp       TIMESTAMP(6) WITH TIME ZONE  NOT NULL,
-  rc_cur_time        TIMESTAMP(6) WITH TIME ZONE  NOT NULL,
+  rc_cur_time        TIMESTAMP(6) WITH TIME ZONE,
   rc_user            NUMBER          DEFAULT 0 NOT NULL,
   rc_user_text       VARCHAR2(255)         NOT NULL,
   rc_namespace       NUMBER     DEFAULT 0 NOT NULL,
@@ -371,8 +413,7 @@ CREATE TABLE &mw_prefix.recentchanges (
   rc_this_oldid      NUMBER      DEFAULT 0 NOT NULL,
   rc_last_oldid      NUMBER      DEFAULT 0 NOT NULL,
   rc_type            CHAR(1)         DEFAULT '0' NOT NULL,
-  rc_moved_to_ns     NUMBER          DEFAULT 0 NOT NULL,
-  rc_moved_to_title  VARCHAR2(255),
+  rc_source					 VARCHAR2(16),
   rc_patrolled       CHAR(1)         DEFAULT '0' NOT NULL,
   rc_ip              VARCHAR2(15),
   rc_old_len         NUMBER,
@@ -385,7 +426,7 @@ CREATE TABLE &mw_prefix.recentchanges (
 );
 ALTER TABLE &mw_prefix.recentchanges ADD CONSTRAINT &mw_prefix.recentchanges_pk PRIMARY KEY (rc_id);
 ALTER TABLE &mw_prefix.recentchanges ADD CONSTRAINT &mw_prefix.recentchanges_fk1 FOREIGN KEY (rc_user) REFERENCES &mw_prefix.mwuser(user_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
-ALTER TABLE &mw_prefix.recentchanges ADD CONSTRAINT &mw_prefix.recentchanges_fk2 FOREIGN KEY (rc_cur_id) REFERENCES &mw_prefix.page(page_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+ALTER TABLE &mw_prefix.recentchanges ADD CONSTRAINT &mw_prefix.recentchanges_fk2 FOREIGN KEY (rc_cur_id) REFERENCES &mw_prefix.page(page_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 CREATE INDEX &mw_prefix.recentchanges_i01 ON &mw_prefix.recentchanges (rc_timestamp);
 CREATE INDEX &mw_prefix.recentchanges_i02 ON &mw_prefix.recentchanges (rc_namespace, rc_title);
 CREATE INDEX &mw_prefix.recentchanges_i03 ON &mw_prefix.recentchanges (rc_cur_id);
@@ -393,26 +434,20 @@ CREATE INDEX &mw_prefix.recentchanges_i04 ON &mw_prefix.recentchanges (rc_new,rc
 CREATE INDEX &mw_prefix.recentchanges_i05 ON &mw_prefix.recentchanges (rc_ip);
 CREATE INDEX &mw_prefix.recentchanges_i06 ON &mw_prefix.recentchanges (rc_namespace, rc_user_text);
 CREATE INDEX &mw_prefix.recentchanges_i07 ON &mw_prefix.recentchanges (rc_user_text, rc_timestamp);
+CREATE INDEX &mw_prefix.recentchanges_i08 ON &mw_prefix.recentchanges (rc_namespace, rc_type, rc_patrolled, rc_timestamp);
 
 CREATE TABLE &mw_prefix.watchlist (
+  wl_id                     NUMBER     NOT NULL,
   wl_user                   NUMBER     NOT NULL,
   wl_namespace              NUMBER    DEFAULT 0 NOT NULL,
   wl_title                  VARCHAR2(255)        NOT NULL,
   wl_notificationtimestamp  TIMESTAMP(6) WITH TIME ZONE
 );
+ALTER TABLE &mw_prefix.watchlist ADD CONSTRAINT &mw_prefix.watchlist_pk PRIMARY KEY (wl_id);
 ALTER TABLE &mw_prefix.watchlist ADD CONSTRAINT &mw_prefix.watchlist_fk1 FOREIGN KEY (wl_user) REFERENCES &mw_prefix.mwuser(user_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 CREATE UNIQUE INDEX &mw_prefix.watchlist_u01 ON &mw_prefix.watchlist (wl_user, wl_namespace, wl_title);
 CREATE INDEX &mw_prefix.watchlist_i01 ON &mw_prefix.watchlist (wl_namespace, wl_title);
 
-
-CREATE TABLE &mw_prefix.math (
-  math_inputhash              VARCHAR2(32)      NOT NULL,
-  math_outputhash             VARCHAR2(32)      NOT NULL,
-  math_html_conservativeness  NUMBER  NOT NULL,
-  math_html                   CLOB,
-  math_mathml                 CLOB
-);
-CREATE UNIQUE INDEX &mw_prefix.math_u01 ON &mw_prefix.math (math_inputhash);
 
 CREATE TABLE &mw_prefix.searchindex (
   si_page	NUMBER NOT NULL,
@@ -475,6 +510,9 @@ CREATE INDEX &mw_prefix.logging_i01 ON &mw_prefix.logging (log_type, log_timesta
 CREATE INDEX &mw_prefix.logging_i02 ON &mw_prefix.logging (log_user, log_timestamp);
 CREATE INDEX &mw_prefix.logging_i03 ON &mw_prefix.logging (log_namespace, log_title, log_timestamp);
 CREATE INDEX &mw_prefix.logging_i04 ON &mw_prefix.logging (log_timestamp);
+CREATE INDEX &mw_prefix.logging_i05 ON &mw_prefix.logging (log_type, log_action, log_timestamp);
+CREATE INDEX &mw_prefix.logging_i06 ON &mw_prefix.logging (log_user_text, log_type, log_timestamp);
+CREATE INDEX &mw_prefix.logging_i07 ON &mw_prefix.logging (log_user_text, log_timestamp);
 
 CREATE TABLE &mw_prefix.log_search (
   ls_field VARCHAR2(32) NOT NULL,
@@ -484,18 +522,6 @@ CREATE TABLE &mw_prefix.log_search (
 ALTER TABLE &mw_prefix.log_search ADD CONSTRAINT log_search_pk PRIMARY KEY (ls_field,ls_value,ls_log_id);
 CREATE INDEX &mw_prefix.log_search_i01 ON &mw_prefix.log_search (ls_log_id);
 
-CREATE SEQUENCE trackbacks_tb_id_seq;
-CREATE TABLE &mw_prefix.trackbacks (
-  tb_id     NUMBER   NOT NULL,
-  tb_page   NUMBER,
-  tb_title  VARCHAR2(255)     NOT NULL,
-  tb_url    VARCHAR2(255)     NOT NULL,
-  tb_ex     CLOB,
-  tb_name   VARCHAR2(255) 
-);
-ALTER TABLE &mw_prefix.trackbacks ADD CONSTRAINT &mw_prefix.trackbacks_pk PRIMARY KEY (tb_id);
-ALTER TABLE &mw_prefix.trackbacks ADD CONSTRAINT &mw_prefix.trackbacks_fk1 FOREIGN KEY (tb_page) REFERENCES &mw_prefix.page(page_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
-CREATE INDEX &mw_prefix.trackbacks_i01 ON &mw_prefix.trackbacks (tb_page);
 
 CREATE SEQUENCE job_job_id_seq;
 CREATE TABLE &mw_prefix.job (
@@ -503,10 +529,20 @@ CREATE TABLE &mw_prefix.job (
   job_cmd        VARCHAR2(60)      NOT NULL,
   job_namespace  NUMBER  DEFAULT 0 NOT NULL,
   job_title      VARCHAR2(255)      NOT NULL,
-  job_params     CLOB      NOT NULL
+  job_timestamp	 TIMESTAMP(6) WITH TIME ZONE NULL,
+  job_params     CLOB      NOT NULL,
+  job_random NUMBER DEFAULT 0 NOT NULL,
+  job_token VARCHAR2(32),
+  job_token_timestamp TIMESTAMP(6) WITH TIME ZONE,
+  job_sha1 VARCHAR2(32),
+  job_attempts NUMBER DEFAULT 0 NOT NULL
 );
 ALTER TABLE &mw_prefix.job ADD CONSTRAINT &mw_prefix.job_pk PRIMARY KEY (job_id);
 CREATE INDEX &mw_prefix.job_i01 ON &mw_prefix.job (job_cmd, job_namespace, job_title);
+CREATE INDEX &mw_prefix.job_i02 ON &mw_prefix.job (job_timestamp);
+CREATE INDEX &mw_prefix.job_i03 ON &mw_prefix.job (job_sha1);
+CREATE INDEX &mw_prefix.job_i04 ON &mw_prefix.job (job_cmd,job_token,job_random);
+CREATE INDEX &mw_prefix.job_i05 ON &mw_prefix.job (job_attempts);
 
 CREATE TABLE &mw_prefix.querycache_info (
   qci_type       VARCHAR2(32) NOT NULL,
@@ -546,8 +582,9 @@ CREATE TABLE &mw_prefix.page_restrictions (
   pr_user    NUMBER          NULL,
   pr_expiry  TIMESTAMP(6) WITH TIME ZONE      NULL
 );
-ALTER TABLE &mw_prefix.page_restrictions ADD CONSTRAINT &mw_prefix.page_restrictions_pk PRIMARY KEY (pr_page,pr_type);
+ALTER TABLE &mw_prefix.page_restrictions ADD CONSTRAINT &mw_prefix.page_restrictions_pk PRIMARY KEY (pr_id);
 ALTER TABLE &mw_prefix.page_restrictions ADD CONSTRAINT &mw_prefix.page_restrictions_fk1 FOREIGN KEY (pr_page) REFERENCES &mw_prefix.page(page_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+CREATE UNIQUE INDEX &mw_prefix.page_restrictions_u01 ON &mw_prefix.page_restrictions (pr_page,pr_type);
 CREATE INDEX &mw_prefix.page_restrictions_i01 ON &mw_prefix.page_restrictions (pr_type,pr_level);
 CREATE INDEX &mw_prefix.page_restrictions_i02 ON &mw_prefix.page_restrictions (pr_level);
 CREATE INDEX &mw_prefix.page_restrictions_i03 ON &mw_prefix.page_restrictions (pr_cascade);
@@ -579,23 +616,27 @@ CREATE TABLE &mw_prefix.updatelog (
 ALTER TABLE &mw_prefix.updatelog ADD CONSTRAINT &mw_prefix.updatelog_pk PRIMARY KEY (ul_key);
 
 CREATE TABLE &mw_prefix.change_tag (
+  ct_id NUMBER NOT NULL,
   ct_rc_id NUMBER NULL,
   ct_log_id NUMBER NULL,
   ct_rev_id NUMBER NULL,
   ct_tag VARCHAR2(255) NOT NULL,
   ct_params BLOB NULL
 );
+ALTER TABLE &mw_prefix.change_tag ADD CONSTRAINT &mw_prefix.change_tag_pk PRIMARY KEY (ct_id);
 CREATE UNIQUE INDEX &mw_prefix.change_tag_u01 ON &mw_prefix.change_tag (ct_rc_id,ct_tag);
 CREATE UNIQUE INDEX &mw_prefix.change_tag_u02 ON &mw_prefix.change_tag (ct_log_id,ct_tag);
 CREATE UNIQUE INDEX &mw_prefix.change_tag_u03 ON &mw_prefix.change_tag (ct_rev_id,ct_tag);
 CREATE INDEX &mw_prefix.change_tag_i01 ON &mw_prefix.change_tag (ct_tag,ct_rc_id,ct_rev_id,ct_log_id);
 
 CREATE TABLE &mw_prefix.tag_summary (
+  ts_id NUMBER NOT NULL,
   ts_rc_id NUMBER NULL,
   ts_log_id NUMBER NULL,
   ts_rev_id NUMBER NULL,
   ts_tags BLOB NOT NULL
 );
+ALTER TABLE &mw_prefix.tag_summary ADD CONSTRAINT &mw_prefix.tag_summary_pk PRIMARY KEY (ts_id);
 CREATE UNIQUE INDEX &mw_prefix.tag_summary_u01 ON &mw_prefix.tag_summary (ts_rc_id);
 CREATE UNIQUE INDEX &mw_prefix.tag_summary_u02 ON &mw_prefix.tag_summary (ts_log_id);
 CREATE UNIQUE INDEX &mw_prefix.tag_summary_u03 ON &mw_prefix.tag_summary (ts_rev_id);
@@ -607,10 +648,11 @@ ALTER TABLE &mw_prefix.valid_tag ADD CONSTRAINT &mw_prefix.valid_tag_pk PRIMARY 
 
 -- This table is not used unless profiling is turned on
 --CREATE TABLE &mw_prefix.profiling (
---  pf_count   NUMBER         DEFAULT 0 NOT NULL,
---  pf_time    NUMERIC(18,10)  DEFAULT 0 NOT NULL,
---  pf_name    CLOB            NOT NULL,
---  pf_server  CLOB            NULL
+--  pf_count   NUMBER          DEFAULT 0 NOT NULL,
+--  pf_time    NUMBER(18,10)   DEFAULT 0 NOT NULL,
+--  pf_memory  NUMBER(18,10)   DEFAULT 0 NOT NULL,
+--  pf_name    VARCHAR2(255),
+--  pf_server  VARCHAR2(30)
 --);
 --CREATE UNIQUE INDEX &mw_prefix.profiling_u01 ON &mw_prefix.profiling (pf_name, pf_server);
 
@@ -624,26 +666,45 @@ CREATE TABLE &mw_prefix.l10n_cache (
 );
 CREATE INDEX &mw_prefix.l10n_cache_u01 ON &mw_prefix.l10n_cache (lc_lang, lc_key);
 
-CREATE TABLE &mw_prefix.msg_resource (
-  mr_resource VARCHAR2(255) NOT NULL,
-  mr_lang varchar2(32) NOT NULL,
-  mr_blob BLOB NOT NULL,
-  mr_timestamp TIMESTAMP(6) WITH TIME ZONE NOT NULL
-) ;
-CREATE UNIQUE INDEX &mw_prefix.msg_resource_u01 ON &mw_prefix.msg_resource (mr_resource, mr_lang);
-
-CREATE TABLE &mw_prefix.msg_resource_links (
-  mrl_resource VARCHAR2(255) NOT NULL,
-  mrl_message VARCHAR2(255) NOT NULL
-);
-CREATE UNIQUE INDEX &mw_prefix.msg_resource_links_u01 ON &mw_prefix.msg_resource_links (mrl_message, mrl_resource);
-
 CREATE TABLE &mw_prefix.module_deps (
   md_module VARCHAR2(255) NOT NULL,
   md_skin VARCHAR2(32) NOT NULL,
   md_deps BLOB NOT NULL
 );
 CREATE UNIQUE INDEX &mw_prefix.module_deps_u01 ON &mw_prefix.module_deps (md_module, md_skin);
+
+CREATE SEQUENCE sites_site_id_seq MINVALUE 0 START WITH 0;
+CREATE TABLE &mw_prefix.sites (
+  site_id NUMBER NOT NULL,
+  site_global_key VARCHAR2(32) NOT NULL,
+  site_type VARCHAR2(32) NOT NULL,
+  site_group VARCHAR2(32) NOT NULL,
+  site_source VARCHAR2(32) NOT NULL,
+  site_language VARCHAR2(32) NOT NULL,
+  site_protocol VARCHAR2(32) NOT NULL,
+  site_domain VARCHAR2(255) NOT NULL,
+  site_data BLOB NOT NULL,
+  site_forward NUMBER(1) NOT NULL,
+  site_config BLOB NOT NULL
+);
+ALTER TABLE &mw_prefix.sites ADD CONSTRAINT &mw_prefix.sites_pk PRIMARY KEY (site_id);
+CREATE UNIQUE INDEX &mw_prefix.sites_u01 ON &mw_prefix.sites (site_global_key);
+CREATE INDEX &mw_prefix.sites_i01 ON &mw_prefix.sites (site_type);
+CREATE INDEX &mw_prefix.sites_i02 ON &mw_prefix.sites (site_group);
+CREATE INDEX &mw_prefix.sites_i03 ON &mw_prefix.sites (site_source);
+CREATE INDEX &mw_prefix.sites_i04 ON &mw_prefix.sites (site_language);
+CREATE INDEX &mw_prefix.sites_i05 ON &mw_prefix.sites (site_protocol);
+CREATE INDEX &mw_prefix.sites_i06 ON &mw_prefix.sites (site_domain);
+CREATE INDEX &mw_prefix.sites_i07 ON &mw_prefix.sites (site_forward);
+
+CREATE TABLE &mw_prefix.site_identifiers (
+  si_site NUMBER NOT NULL,
+  si_type VARCHAR2(32) NOT NULL,
+  si_key VARCHAR2(32) NOT NULL
+);
+CREATE UNIQUE INDEX &mw_prefix.site_identifiers_u01 ON &mw_prefix.site_identifiers (si_type, si_key);
+CREATE INDEX &mw_prefix.site_identifiers_i01 ON &mw_prefix.site_identifiers (si_site);
+CREATE INDEX &mw_prefix.site_identifiers_i02 ON &mw_prefix.site_identifiers (si_key);
 
 -- do not prefix this table as it breaks parserTests
 CREATE TABLE wiki_field_info_full (
@@ -653,9 +714,9 @@ data_default VARCHAR2(4000),
 data_length NUMBER NOT NULL,
 data_type VARCHAR2(106),
 not_null CHAR(1) NOT NULL,
-prim NUMBER(1), 
+prim NUMBER(1),
 uniq NUMBER(1),
-nonuniq NUMBER(1) 
+nonuniq NUMBER(1)
 );
 ALTER TABLE wiki_field_info_full ADD CONSTRAINT wiki_field_info_full_pk PRIMARY KEY (table_name, column_name);
 
@@ -718,18 +779,23 @@ CREATE OR REPLACE PROCEDURE duplicate_table(p_tabname   IN VARCHAR2,
   e_table_not_exist EXCEPTION;
   PRAGMA EXCEPTION_INIT(e_table_not_exist, -00942);
   l_temp_ei_sql VARCHAR2(2000);
+  l_temporary   BOOLEAN := p_temporary;
 BEGIN
   BEGIN
     EXECUTE IMMEDIATE 'DROP TABLE ' || p_newprefix || p_tabname ||
-                      ' CASCADE CONSTRAINTS';
+                      ' CASCADE CONSTRAINTS PURGE';
   EXCEPTION
     WHEN e_table_not_exist THEN
       NULL;
   END;
-  IF (p_temporary) THEN
+  IF (p_tabname = 'SEARCHINDEX') THEN
+    l_temporary := FALSE;
+  END IF;
+  IF (l_temporary) THEN
     EXECUTE IMMEDIATE 'CREATE GLOBAL TEMPORARY TABLE ' || p_newprefix ||
-                      p_tabname || ' AS SELECT * FROM ' || p_oldprefix ||
-                      p_tabname || ' WHERE ROWNUM = 0';
+                      p_tabname ||
+                      ' ON COMMIT PRESERVE ROWS AS SELECT * FROM ' ||
+                      p_oldprefix || p_tabname || ' WHERE ROWNUM = 0';
   ELSE
     EXECUTE IMMEDIATE 'CREATE TABLE ' || p_newprefix || p_tabname ||
                       ' AS SELECT * FROM ' || p_oldprefix || p_tabname ||
@@ -756,22 +822,31 @@ BEGIN
               WHERE table_name = p_oldprefix || p_tabname
                 AND constraint_type = 'P') LOOP
     l_temp_ei_sql := SUBSTR(rc.ddlvc2, 1, INSTR(rc.ddlvc2, 'PCTFREE') - 1);
-    l_temp_ei_sql := SUBSTR(l_temp_ei_sql, 1, INSTR(l_temp_ei_sql, ')', INSTR(l_temp_ei_sql, 'PRIMARY KEY')+1)+1);
-    EXECUTE IMMEDIATE l_temp_ei_sql;
+    l_temp_ei_sql := SUBSTR(l_temp_ei_sql,
+                            1,
+                            INSTR(l_temp_ei_sql,
+                                  ')',
+                                  INSTR(l_temp_ei_sql, 'PRIMARY KEY') + 1) + 1);
+    IF nvl(length(l_temp_ei_sql), 0) > 0 THEN
+      EXECUTE IMMEDIATE l_temp_ei_sql;
+    END IF;
   END LOOP;
-  IF (NOT p_temporary) THEN
-  FOR rc IN (SELECT REPLACE(DBMS_LOB.SUBSTR(DBMS_METADATA.get_ddl('REF_CONSTRAINT',
-                                                                  constraint_name),
-                                            32767,
-                                            1),
-                            USER || '"."' || p_oldprefix,
-                            USER || '"."' || p_newprefix) DDLVC2,
-                    constraint_name
-               FROM user_constraints uc
-              WHERE table_name = p_oldprefix || p_tabname
-                AND constraint_type = 'R') LOOP
-    EXECUTE IMMEDIATE rc.ddlvc2;
-  END LOOP;
+  IF (NOT l_temporary) THEN
+    FOR rc IN (SELECT REPLACE(DBMS_LOB.SUBSTR(DBMS_METADATA.get_ddl('REF_CONSTRAINT',
+                                                                    constraint_name),
+                                              32767,
+                                              1),
+                              USER || '"."' || p_oldprefix,
+                              USER || '"."' || p_newprefix) DDLVC2,
+                      constraint_name
+                 FROM user_constraints uc
+                WHERE table_name = p_oldprefix || p_tabname
+                  AND constraint_type = 'R') LOOP
+      IF nvl(length(l_temp_ei_sql), 0) > 0 AND
+         INSTR(l_temp_ei_sql, 'PRIMARY KEY') = 0 THEN
+        EXECUTE IMMEDIATE l_temp_ei_sql;
+      END IF;
+    END LOOP;
   END IF;
   FOR rc IN (SELECT REPLACE(REPLACE(DBMS_LOB.SUBSTR(DBMS_METADATA.get_ddl('INDEX',
                                                                           index_name),
@@ -792,8 +867,38 @@ BEGIN
                       WHERE table_name = ui.table_name
                         AND constraint_name = ui.index_name)) LOOP
     l_temp_ei_sql := SUBSTR(rc.ddlvc2, 1, INSTR(rc.ddlvc2, 'PCTFREE') - 1);
-    l_temp_ei_sql := SUBSTR(l_temp_ei_sql, 1, INSTR(l_temp_ei_sql, ')', INSTR(l_temp_ei_sql, '"' || USER || '"."' || p_newprefix || '"')+1)+1);
-    EXECUTE IMMEDIATE l_temp_ei_sql;
+    l_temp_ei_sql := SUBSTR(l_temp_ei_sql,
+                            1,
+                            INSTR(l_temp_ei_sql,
+                                  ')',
+                                  INSTR(l_temp_ei_sql,
+                                        '"' || USER || '"."' || p_newprefix || '"') + 1) + 1);
+    IF nvl(length(l_temp_ei_sql), 0) > 0 THEN
+      EXECUTE IMMEDIATE l_temp_ei_sql;
+    END IF;
+  END LOOP;
+  FOR rc IN (SELECT REPLACE(REPLACE(DBMS_LOB.SUBSTR(DBMS_METADATA.get_ddl('INDEX',
+                                                                          index_name),
+                                                    32767,
+                                                    1),
+                                    USER || '"."' || p_oldprefix,
+                                    USER || '"."' || p_newprefix),
+                            '"' || index_name || '"',
+                            '"' || p_newprefix || index_name || '"') DDLVC2,
+                    index_name,
+                    index_type
+               FROM user_indexes ui
+              WHERE table_name = p_oldprefix || p_tabname
+                AND index_type = 'DOMAIN'
+                AND NOT EXISTS
+              (SELECT NULL
+                       FROM user_constraints
+                      WHERE table_name = ui.table_name
+                        AND constraint_name = ui.index_name)) LOOP
+    l_temp_ei_sql := rc.ddlvc2;
+    IF nvl(length(l_temp_ei_sql), 0) > 0 THEN
+      EXECUTE IMMEDIATE l_temp_ei_sql;
+    END IF;
   END LOOP;
   FOR rc IN (SELECT REPLACE(REPLACE(UPPER(DBMS_LOB.SUBSTR(DBMS_METADATA.get_ddl('TRIGGER',
                                                                                 trigger_name),
@@ -807,9 +912,12 @@ BEGIN
                FROM user_triggers
               WHERE table_name = p_oldprefix || p_tabname) LOOP
     l_temp_ei_sql := SUBSTR(rc.ddlvc2, 1, INSTR(rc.ddlvc2, 'ALTER ') - 1);
-    EXECUTE IMMEDIATE l_temp_ei_sql;
+    IF nvl(length(l_temp_ei_sql), 0) > 0 THEN
+      EXECUTE IMMEDIATE l_temp_ei_sql;
+    END IF;
   END LOOP;
 END;
+
 /*$mw$*/
 
 /*$mw$*/

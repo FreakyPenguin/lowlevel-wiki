@@ -33,6 +33,8 @@ if ( $wgCommandLineMode ) {
 # $wgDisableOutputCompression = true;
 
 $wgSitename         = "Lowlevel";
+$wgServer           = "//www.lowlevel.eu";
+$wgSecureLogin      = true;
 
 ## The URL base path to the directory containing the wiki;
 ## defaults for all runtime URL paths are based off of this.
@@ -92,6 +94,7 @@ $wgEnableUploads       = true;
 $wgFileExtensions = array( 'png', 'gif', 'jpg', 'jpeg', 'pdf' );
 # $wgUseImageMagick = true;
 # $wgImageMagickConvertCommand = "/usr/bin/convert";
+$wgUploadDirectory = "/images";
 
 ## If you want to use image uploads under safe mode,
 ## create the directories images/archive, images/thumb and
@@ -111,6 +114,10 @@ $wgSecretKey = $_ENV['SECRET_KEY'];
 
 ## Default skin: you can change the default skin. Use the internal symbolic
 ## names, ie 'standard', 'nostalgia', 'cologneblue', 'monobook':
+wfLoadSkin( 'Vector' );
+wfLoadSkin( 'MonoBook' );
+wfLoadSkin( 'Modern' );
+wfLoadSkin( 'CologneBlue' );
 $wgDefaultSkin = 'monobook';
 
 ## For attaching licensing metadata to pages, and displaying an

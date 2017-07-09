@@ -27,112 +27,194 @@
  *
  * @ingroup SpecialPage
  */
-class DoubleRedirectsPage extends PageQueryPage {
-
-	function getName() {
-		return 'DoubleRedirects';
+class DoubleRedirectsPage extends QueryPage {
+	function __construct( $name = 'DoubleRedirects' ) {
+		parent::__construct( $name );
 	}
 
-	function isExpensive( ) { return true; }
-	function isSyndicated() { return false; }
-
-	function getPageHeader( ) {
-		return wfMsgExt( 'doubleredirectstext', array( 'parse' ) );
+	public function isExpensive() {
+		return true;
 	}
 
-	function getSQLText( &$dbr, $namespace = null, $title = null ) {
+	function isSyndicated() {
+		return false;
+	}
 
-		list( $page, $redirect ) = $dbr->tableNamesN( 'page', 'redirect' );
+	function sortDescending() {
+		return false;
+	}
 
+	function getPageHeader() {
+		return $this->msg( 'doubleredirectstext' )->parseAsBlock();
+	}
+
+	function reallyGetQueryInfo( $namespace = null, $title = null ) {
 		$limitToTitle = !( $namespace === null && $title === null );
-		$sql = $limitToTitle ? "SELECT" : "SELECT 'DoubleRedirects' as type," ;
-		$sql .=
-			 " pa.page_namespace as namespace, pa.page_title as title," .
-			 " pb.page_namespace as nsb, pb.page_title as tb," .
-			 " pc.page_namespace as nsc, pc.page_title as tc" .
-		   " FROM $redirect AS ra, $redirect AS rb, $page AS pa, $page AS pb, $page AS pc" .
-		   " WHERE ra.rd_from=pa.page_id" .
-			 " AND ra.rd_namespace=pb.page_namespace" .
-			 " AND ra.rd_title=pb.page_title" .
-			 " AND rb.rd_from=pb.page_id" .
-			 " AND rb.rd_namespace=pc.page_namespace" .
-			 " AND rb.rd_title=pc.page_title";
+		$dbr = wfGetDB( DB_REPLICA );
+		$retval = [
+			'tables' => [
+				'ra' => 'redirect',
+				'rb' => 'redirect',
+				'pa' => 'page',
+				'pb' => 'page'
+			],
+			'fields' => [
+				'namespace' => 'pa.page_namespace',
+				'title' => 'pa.page_title',
+				'value' => 'pa.page_title',
 
-		if( $limitToTitle ) {
-			$encTitle = $dbr->addQuotes( $title );
-			$sql .= " AND pa.page_namespace=$namespace" .
-					" AND pa.page_title=$encTitle";
+				'nsb' => 'pb.page_namespace',
+				'tb' => 'pb.page_title',
+
+				// Select fields from redirect instead of page. Because there may
+				// not actually be a page table row for this target (e.g. for interwiki redirects)
+				'nsc' => 'rb.rd_namespace',
+				'tc' => 'rb.rd_title',
+				'iwc' => 'rb.rd_interwiki',
+			],
+			'conds' => [
+				'ra.rd_from = pa.page_id',
+
+				// Filter out redirects where the target goes interwiki (bug 40353).
+				// This isn't an optimization, it is required for correct results,
+				// otherwise a non-double redirect like Bar -> w:Foo will show up
+				// like "Bar -> Foo -> w:Foo".
+
+				// Need to check both NULL and "" for some reason,
+				// apparently either can be stored for non-iw entries.
+				'ra.rd_interwiki IS NULL OR ra.rd_interwiki = ' . $dbr->addQuotes( '' ),
+
+				'pb.page_namespace = ra.rd_namespace',
+				'pb.page_title = ra.rd_title',
+
+				'rb.rd_from = pb.page_id',
+			]
+		];
+
+		if ( $limitToTitle ) {
+			$retval['conds']['pa.page_namespace'] = $namespace;
+			$retval['conds']['pa.page_title'] = $title;
 		}
 
-		return $sql;
+		return $retval;
 	}
 
-	function getSQL() {
-		$dbr = wfGetDB( DB_SLAVE );
-		return $this->getSQLText( $dbr );
+	public function getQueryInfo() {
+		return $this->reallyGetQueryInfo();
 	}
 
-	function getOrder() {
-		return '';
+	function getOrderFields() {
+		return [ 'ra.rd_namespace', 'ra.rd_title' ];
 	}
 
+	/**
+	 * @param Skin $skin
+	 * @param object $result Result row
+	 * @return string
+	 */
 	function formatResult( $skin, $result ) {
-		global $wgContLang;
-
-		$fname = 'DoubleRedirectsPage::formatResult';
 		$titleA = Title::makeTitle( $result->namespace, $result->title );
 
+		// If only titleA is in the query, it means this came from
+		// querycache (which only saves 3 columns).
+		// That does save the bulk of the query cost, but now we need to
+		// get a little more detail about each individual entry quickly
+		// using the filter of reallyGetQueryInfo.
 		if ( $result && !isset( $result->nsb ) ) {
-			$dbr = wfGetDB( DB_SLAVE );
-			$sql = $this->getSQLText( $dbr, $result->namespace, $result->title );
-			$res = $dbr->query( $sql, $fname );
+			$dbr = wfGetDB( DB_REPLICA );
+			$qi = $this->reallyGetQueryInfo(
+				$result->namespace,
+				$result->title
+			);
+			$res = $dbr->select(
+				$qi['tables'],
+				$qi['fields'],
+				$qi['conds'],
+				__METHOD__
+			);
+
 			if ( $res ) {
 				$result = $dbr->fetchObject( $res );
 			}
 		}
 		if ( !$result ) {
-			return '<del>' . $skin->link( $titleA, null, array(), array( 'redirect' => 'no' ) ) . '</del>';
+			return '<del>' . Linker::link( $titleA, null, [], [ 'redirect' => 'no' ] ) . '</del>';
 		}
 
 		$titleB = Title::makeTitle( $result->nsb, $result->tb );
-		$titleC = Title::makeTitle( $result->nsc, $result->tc );
+		$titleC = Title::makeTitle( $result->nsc, $result->tc, '', $result->iwc );
 
-		$linkA = $skin->linkKnown(
+		$linkA = Linker::linkKnown(
 			$titleA,
 			null,
-			array(),
-			array( 'redirect' => 'no' )
+			[],
+			[ 'redirect' => 'no' ]
 		);
-		$edit = $skin->linkKnown(
-			$titleA,
-			wfMsgExt( 'parentheses', array( 'escape' ), wfMsg( 'editlink' ) ),
-			array(),
-			array(
-				'redirect' => 'no',
-				'action' => 'edit'
-			)
-		);
-		$linkB = $skin->linkKnown(
+
+		// if the page is editable, add an edit link
+		if (
+			// check user permissions
+			$this->getUser()->isAllowed( 'edit' ) &&
+			// check, if the content model is editable through action=edit
+			ContentHandler::getForTitle( $titleA )->supportsDirectEditing()
+		) {
+			$edit = Linker::linkKnown(
+				$titleA,
+				$this->msg( 'parentheses', $this->msg( 'editlink' )->text() )->escaped(),
+				[],
+				[
+					'action' => 'edit'
+				]
+			);
+		} else {
+			$edit = '';
+		}
+
+		$linkB = Linker::linkKnown(
 			$titleB,
 			null,
-			array(),
-			array( 'redirect' => 'no' )
+			[],
+			[ 'redirect' => 'no' ]
 		);
-		$linkC = $skin->linkKnown( $titleC );
-		$arr = $wgContLang->getArrow() . $wgContLang->getDirMark();
 
-		return( "{$linkA} {$edit} {$arr} {$linkB} {$arr} {$linkC}" );
+		$linkC = Linker::linkKnown( $titleC );
+
+		$lang = $this->getLanguage();
+		$arr = $lang->getArrow() . $lang->getDirMark();
+
+		return ( "{$linkA} {$edit} {$arr} {$linkB} {$arr} {$linkC}" );
 	}
-}
 
-/**
- * constructor
- */
-function wfSpecialDoubleRedirects() {
-	list( $limit, $offset ) = wfCheckLimits();
+	/**
+	 * Cache page content model and gender distinction for performance
+	 *
+	 * @param IDatabase $db
+	 * @param ResultWrapper $res
+	 */
+	function preprocessResults( $db, $res ) {
+		if ( !$res->numRows() ) {
+			return;
+		}
 
-	$sdr = new DoubleRedirectsPage();
+		$batch = new LinkBatch;
+		foreach ( $res as $row ) {
+			$batch->add( $row->namespace, $row->title );
+			if ( isset( $row->nsb ) ) {
+				// lazy loaded when using cached results
+				$batch->add( $row->nsb, $row->tb );
+			}
+			if ( isset( $row->iwc ) && !$row->iwc ) {
+				// lazy loaded when using cached result, not added when interwiki link
+				$batch->add( $row->nsc, $row->tc );
+			}
+		}
+		$batch->execute();
 
-	return $sdr->doQuery( $offset, $limit );
+		// Back to start for display
+		$res->seek( 0 );
+	}
 
+	protected function getGroupName() {
+		return 'maintenance';
+	}
 }

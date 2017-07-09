@@ -25,12 +25,13 @@
  * A special page looking for page without any category.
  *
  * @ingroup SpecialPage
+ * @todo FIXME: Make $requestedNamespace selectable, unify all subclasses into one
  */
 class UncategorizedPagesPage extends PageQueryPage {
-	var $requestedNamespace = NS_MAIN;
+	protected $requestedNamespace = false;
 
-	function getName() {
-		return "Uncategorizedpages";
+	function __construct( $name = 'Uncategorizedpages' ) {
+		parent::__construct( $name );
 	}
 
 	function sortDescending() {
@@ -40,34 +41,45 @@ class UncategorizedPagesPage extends PageQueryPage {
 	function isExpensive() {
 		return true;
 	}
-	function isSyndicated() { return false; }
 
-	function getSQL() {
-		$dbr = wfGetDB( DB_SLAVE );
-		list( $page, $categorylinks ) = $dbr->tableNamesN( 'page', 'categorylinks' );
-		$name = $dbr->addQuotes( $this->getName() );
-
-		return
-			"
-			SELECT
-				$name as type,
-				page_namespace AS namespace,
-				page_title AS title,
-				page_title AS value
-			FROM $page
-			LEFT JOIN $categorylinks ON page_id=cl_from
-			WHERE cl_from IS NULL AND page_namespace={$this->requestedNamespace} AND page_is_redirect=0
-			";
+	function isSyndicated() {
+		return false;
 	}
-}
 
-/**
- * constructor
- */
-function wfSpecialUncategorizedpages() {
-	list( $limit, $offset ) = wfCheckLimits();
+	function getQueryInfo() {
+		return [
+			'tables' => [ 'page', 'categorylinks' ],
+			'fields' => [
+				'namespace' => 'page_namespace',
+				'title' => 'page_title',
+				'value' => 'page_title'
+			],
+			// default for page_namespace is all content namespaces (if requestedNamespace is false)
+			// otherwise, page_namespace is requestedNamespace
+			'conds' => [
+				'cl_from IS NULL',
+				'page_namespace' => $this->requestedNamespace !== false
+						? $this->requestedNamespace
+						: MWNamespace::getContentNamespaces(),
+				'page_is_redirect' => 0
+			],
+			'join_conds' => [
+				'categorylinks' => [ 'LEFT JOIN', 'cl_from = page_id' ]
+			]
+		];
+	}
 
-	$lpp = new UncategorizedPagesPage();
+	function getOrderFields() {
+		// For some crazy reason ordering by a constant
+		// causes a filesort
+		if ( $this->requestedNamespace === false && count( MWNamespace::getContentNamespaces() ) > 1 ) {
+			return [ 'page_namespace', 'page_title' ];
+		}
 
-	return $lpp->doQuery( $offset, $limit );
+		return [ 'page_title' ];
+	}
+
+	protected function getGroupName() {
+		return 'maintenance';
+	}
 }

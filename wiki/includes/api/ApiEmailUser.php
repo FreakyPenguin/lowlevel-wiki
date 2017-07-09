@@ -1,6 +1,6 @@
 <?php
 /**
- * API for MediaWiki 1.8+
+ *
  *
  * Created on June 1, 2008
  *
@@ -24,45 +24,38 @@
  * @file
  */
 
-if ( !defined( 'MEDIAWIKI' ) ) {
-	// Eclipse helper - will be ignored in production
-	require_once( "ApiBase.php" );
-}
-
 /**
  * API Module to facilitate sending of emails to users
  * @ingroup API
  */
 class ApiEmailUser extends ApiBase {
 
-	public function __construct( $main, $action ) {
-		parent::__construct( $main, $action );
-	}
-
 	public function execute() {
-		global $wgUser;
-
 		$params = $this->extractRequestParams();
 
 		// Validate target
 		$targetUser = SpecialEmailUser::getTarget( $params['target'] );
 		if ( !( $targetUser instanceof User ) ) {
-			$this->dieUsageMsg( array( $targetUser ) );
+			$this->dieUsageMsg( [ $targetUser ] );
 		}
 
 		// Check permissions and errors
-		$error = SpecialEmailUser::getPermissionsError( $wgUser, $params['token'] );
+		$error = SpecialEmailUser::getPermissionsError(
+			$this->getUser(),
+			$params['token'],
+			$this->getConfig()
+		);
 		if ( $error ) {
-			$this->dieUsageMsg( array( $error ) );
+			$this->dieUsageMsg( [ $error ] );
 		}
 
-		$data = array(
+		$data = [
 			'Target' => $targetUser->getName(),
 			'Text' => $params['text'],
 			'Subject' => $params['subject'],
 			'CCMe' => $params['ccme'],
-		);
-		$retval = SpecialEmailUser::submit( $data );
+		];
+		$retval = SpecialEmailUser::submit( $data, $this->getContext() );
 
 		if ( $retval instanceof Status ) {
 			// SpecialEmailUser sometimes returns a status
@@ -75,12 +68,12 @@ class ApiEmailUser extends ApiBase {
 		}
 
 		if ( $retval === true ) {
-			$result = array( 'result' => 'Success' );
+			$result = [ 'result' => 'Success' ];
 		} else {
-			$result = array(
+			$result = [
 				'result' => 'Failure',
 				'message' => $retval
-			);
+			];
 		}
 
 		$this->getResult()->addValue( null, $this->getModuleName(), $result );
@@ -95,56 +88,32 @@ class ApiEmailUser extends ApiBase {
 	}
 
 	public function getAllowedParams() {
-		return array(
-			'target' => array(
+		return [
+			'target' => [
 				ApiBase::PARAM_TYPE => 'string',
 				ApiBase::PARAM_REQUIRED => true
-			),
+			],
 			'subject' => null,
-			'text' => array(
-				ApiBase::PARAM_TYPE => 'string',
+			'text' => [
+				ApiBase::PARAM_TYPE => 'text',
 				ApiBase::PARAM_REQUIRED => true
-			),
-			'token' => null,
+			],
 			'ccme' => false,
-		);
-	}
-
-	public function getParamDescription() {
-		return array(
-			'target' => 'User to send email to',
-			'subject' => 'Subject header',
-			'text' => 'Mail body',
-			'token' => 'A token previously acquired via prop=info',
-			'ccme' => 'Send a copy of this mail to me',
-		);
-	}
-
-	public function getDescription() {
-		return 'Email a user.';
-	}
-
-	public function getPossibleErrors() {
-		return array_merge( parent::getPossibleErrors(), array(
-			array( 'usermaildisabled' ),
-		) );
+		];
 	}
 
 	public function needsToken() {
-		return true;
+		return 'csrf';
 	}
 
-	public function getTokenSalt() {
-		return '';
+	protected function getExamplesMessages() {
+		return [
+			'action=emailuser&target=WikiSysop&text=Content&token=123ABC'
+				=> 'apihelp-emailuser-example-email',
+		];
 	}
 
-	protected function getExamples() {
-		return array(
-			'api.php?action=emailuser&target=WikiSysop&text=Content'
-		);
-	}
-
-	public function getVersion() {
-		return __CLASS__ . ': $Id: ApiEmailUser.php 85354 2011-04-04 18:25:31Z demon $';
+	public function getHelpUrls() {
+		return 'https://www.mediawiki.org/wiki/API:Email';
 	}
 }

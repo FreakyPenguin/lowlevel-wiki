@@ -1,11 +1,11 @@
 <?php
 
 /**
- * API for MediaWiki 1.8+
+ *
  *
  * Created on Mar 24, 2009
  *
- * Copyright © 2009 Roan Kattouw <Firstname>.<Lastname>@home.nl
+ * Copyright © 2009 Roan Kattouw "<Firstname>.<Lastname>@gmail.com"
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,60 +25,80 @@
  * @file
  */
 
-if ( !defined( 'MEDIAWIKI' ) ) {
-	// Eclipse helper - will be ignored in production
-	require_once( "ApiBase.php" );
-}
-
 /**
  * @ingroup API
  */
 class ApiUserrights extends ApiBase {
 
-	public function __construct( $main, $action ) {
-		parent::__construct( $main, $action );
-	}
-
 	private $mUser = null;
 
-	public function execute() {
-		$params = $this->extractRequestParams();
-
-		$user = $this->getUser();
-
-		$form = new UserrightsPage;
-		$r['user'] = $user->getName();
-		list( $r['added'], $r['removed'] ) =
-			$form->doSaveUserGroups(
-				$user, (array)$params['add'],
-				(array)$params['remove'], $params['reason'] );
-
-		$this->getResult()->setIndexedTagName( $r['added'], 'group' );
-		$this->getResult()->setIndexedTagName( $r['removed'], 'group' );
-		$this->getResult()->addValue( null, $this->getModuleName(), $r );
+	/**
+	 * Get a UserrightsPage object, or subclass.
+	 * @return UserrightsPage
+	 */
+	protected function getUserRightsPage() {
+		return new UserrightsPage;
 	}
 
 	/**
+	 * Get all available groups.
+	 * @return array
+	 */
+	protected function getAllGroups() {
+		return User::getAllGroups();
+	}
+
+	public function execute() {
+		$pUser = $this->getUser();
+
+		// Deny if the user is blocked and doesn't have the full 'userrights' permission.
+		// This matches what Special:UserRights does for the web UI.
+		if ( $pUser->isBlocked() && !$pUser->isAllowed( 'userrights' ) ) {
+			$this->dieBlocked( $pUser->getBlock() );
+		}
+
+		$params = $this->extractRequestParams();
+
+		$user = $this->getUrUser( $params );
+
+		$form = $this->getUserRightsPage();
+		$form->setContext( $this->getContext() );
+		$r['user'] = $user->getName();
+		$r['userid'] = $user->getId();
+		list( $r['added'], $r['removed'] ) = $form->doSaveUserGroups(
+			$user, (array)$params['add'],
+			(array)$params['remove'], $params['reason']
+		);
+
+		$result = $this->getResult();
+		ApiResult::setIndexedTagName( $r['added'], 'group' );
+		ApiResult::setIndexedTagName( $r['removed'], 'group' );
+		$result->addValue( null, $this->getModuleName(), $r );
+	}
+
+	/**
+	 * @param array $params
 	 * @return User
 	 */
-	private function getUser() {
+	private function getUrUser( array $params ) {
 		if ( $this->mUser !== null ) {
 			return $this->mUser;
 		}
 
-		$params = $this->extractRequestParams();
+		$this->requireOnlyOneParameter( $params, 'user', 'userid' );
 
-		$form = new UserrightsPage;
-		$status = $form->fetchUser( $params['user'] );
+		$user = isset( $params['user'] ) ? $params['user'] : '#' . $params['userid'];
+
+		$form = $this->getUserRightsPage();
+		$form->setContext( $this->getContext() );
+		$status = $form->fetchUser( $user );
 		if ( !$status->isOK() ) {
-			$errors = $status->getErrorsArray();
-			$this->dieUsageMsg( $errors[0] );
-		} else {
-			$user = $status->value;
+			$this->dieStatus( $status );
 		}
 
-		$this->mUser = $user;
-		return $user;
+		$this->mUser = $status->value;
+
+		return $status->value;
 	}
 
 	public function mustBePosted() {
@@ -90,55 +110,49 @@ class ApiUserrights extends ApiBase {
 	}
 
 	public function getAllowedParams() {
-		return array (
-			'user' => array(
-				ApiBase::PARAM_TYPE => 'string',
-				ApiBase::PARAM_REQUIRED => true
-			),
-			'add' => array(
-				ApiBase::PARAM_TYPE => User::getAllGroups(),
+		return [
+			'user' => [
+				ApiBase::PARAM_TYPE => 'user',
+			],
+			'userid' => [
+				ApiBase::PARAM_TYPE => 'integer',
+			],
+			'add' => [
+				ApiBase::PARAM_TYPE => $this->getAllGroups(),
 				ApiBase::PARAM_ISMULTI => true
-			),
-			'remove' => array(
-				ApiBase::PARAM_TYPE => User::getAllGroups(),
+			],
+			'remove' => [
+				ApiBase::PARAM_TYPE => $this->getAllGroups(),
 				ApiBase::PARAM_ISMULTI => true
-			),
-			'token' => null,
-			'reason' => array(
+			],
+			'reason' => [
 				ApiBase::PARAM_DFLT => ''
-			)
-		);
-	}
-
-	public function getParamDescription() {
-		return array(
-			'user' => 'User name',
-			'add' => 'Add the user to these groups',
-			'remove' => 'Remove the user from these groups',
-			'token' => 'A userrights token previously retrieved through list=users',
-			'reason' => 'Reason for the change',
-		);
-	}
-
-	public function getDescription() {
-		return 'Add/remove a user to/from groups';
+			],
+			'token' => [
+				// Standard definition automatically inserted
+				ApiBase::PARAM_HELP_MSG_APPEND => [ 'api-help-param-token-webui' ],
+			],
+		];
 	}
 
 	public function needsToken() {
-		return true;
+		return 'userrights';
 	}
 
-	public function getTokenSalt() {
-		return $this->getUser()->getName();
+	protected function getWebUITokenSalt( array $params ) {
+		return $this->getUrUser( $params )->getName();
 	}
 
-	protected function getExamples() {
-		return array(
-			'api.php?action=userrights&user=FooBot&add=bot&remove=sysop|bureaucrat&token=123ABC'
-		);
+	protected function getExamplesMessages() {
+		return [
+			'action=userrights&user=FooBot&add=bot&remove=sysop|bureaucrat&token=123ABC'
+				=> 'apihelp-userrights-example-user',
+			'action=userrights&userid=123&add=bot&remove=sysop|bureaucrat&token=123ABC'
+				=> 'apihelp-userrights-example-userid',
+		];
 	}
 
-	public function getVersion() {
-		return __CLASS__ . ': $Id: ApiUserrights.php 75602 2010-10-28 00:04:48Z reedy $';
+	public function getHelpUrls() {
+		return 'https://www.mediawiki.org/wiki/API:User_group_membership';
 	}
 }

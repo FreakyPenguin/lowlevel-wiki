@@ -31,52 +31,61 @@
  * @ingroup SpecialPage
  */
 class MostlinkedPage extends QueryPage {
+	function __construct( $name = 'Mostlinked' ) {
+		parent::__construct( $name );
+	}
 
-	function getName() { return 'Mostlinked'; }
-	function isExpensive() { return true; }
-	function isSyndicated() { return false; }
+	public function isExpensive() {
+		return true;
+	}
 
-	function getSQL() {
-		global $wgMiserMode;
+	function isSyndicated() {
+		return false;
+	}
 
-		$dbr = wfGetDB( DB_SLAVE );
-
-		# In miser mode, reduce the query cost by adding a threshold for large wikis
-		if ( $wgMiserMode ) {
-			$numPages = SiteStats::pages();
-			if ( $numPages > 10000 ) {
-				$cutoff = 100;
-			} elseif ( $numPages > 100 ) {
-				$cutoff = intval( sqrt( $numPages ) );
-			} else {
-				$cutoff = 1;
-			}
-		} else {
-			$cutoff = 1;
-		}
-
-		list( $pagelinks, $page ) = $dbr->tableNamesN( 'pagelinks', 'page' );
-		return
-			"SELECT 'Mostlinked' AS type,
-				pl_namespace AS namespace,
-				pl_title AS title,
-				COUNT(*) AS value
-			FROM $pagelinks
-			LEFT JOIN $page ON pl_namespace=page_namespace AND pl_title=page_title
-			GROUP BY pl_namespace, pl_title
-			HAVING COUNT(*) > $cutoff";
+	public function getQueryInfo() {
+		return [
+			'tables' => [ 'pagelinks', 'page' ],
+			'fields' => [
+				'namespace' => 'pl_namespace',
+				'title' => 'pl_title',
+				'value' => 'COUNT(*)',
+				'page_namespace'
+			],
+			'options' => [
+				'HAVING' => 'COUNT(*) > 1',
+				'GROUP BY' => [
+					'pl_namespace', 'pl_title',
+					'page_namespace'
+				]
+			],
+			'join_conds' => [
+				'page' => [
+					'LEFT JOIN',
+					[
+						'page_namespace = pl_namespace',
+						'page_title = pl_title'
+					]
+				]
+			]
+		];
 	}
 
 	/**
 	 * Pre-fill the link cache
+	 *
+	 * @param IDatabase $db
+	 * @param ResultWrapper $res
 	 */
 	function preprocessResults( $db, $res ) {
-		if( $db->numRows( $res ) > 0 ) {
+		if ( $res->numRows() > 0 ) {
 			$linkBatch = new LinkBatch();
+
 			foreach ( $res as $row ) {
 				$linkBatch->add( $row->namespace, $row->title );
 			}
-			$db->dataSeek( $res, 0 );
+
+			$res->seek( 0 );
 			$linkBatch->execute();
 		}
 	}
@@ -84,44 +93,47 @@ class MostlinkedPage extends QueryPage {
 	/**
 	 * Make a link to "what links here" for the specified title
 	 *
-	 * @param $title Title being queried
-	 * @param $caption String: text to display on the link
-	 * @param $skin Skin to use
-	 * @return String
+	 * @param Title $title Title being queried
+	 * @param string $caption Text to display on the link
+	 * @return string
 	 */
-	function makeWlhLink( &$title, $caption, &$skin ) {
+	function makeWlhLink( $title, $caption ) {
 		$wlh = SpecialPage::getTitleFor( 'Whatlinkshere', $title->getPrefixedDBkey() );
-		return $skin->linkKnown( $wlh, $caption );
+
+		return Linker::linkKnown( $wlh, $caption );
 	}
 
 	/**
-	 * Make links to the page corresponding to the item, and the "what links here" page for it
+	 * Make links to the page corresponding to the item,
+	 * and the "what links here" page for it
 	 *
-	 * @param $skin Skin to be used
-	 * @param $result Result row
+	 * @param Skin $skin Skin to be used
+	 * @param object $result Result row
 	 * @return string
 	 */
 	function formatResult( $skin, $result ) {
-		global $wgLang;
 		$title = Title::makeTitleSafe( $result->namespace, $result->title );
 		if ( !$title ) {
-			return '<!-- ' . htmlspecialchars( "Invalid title: [[$title]]" ) . ' -->';
+			return Html::element(
+				'span',
+				[ 'class' => 'mw-invalidtitle' ],
+				Linker::getInvalidTitleDescription(
+					$this->getContext(),
+					$result->namespace,
+					$result->title )
+			);
 		}
-		$link = $skin->link( $title );
-		$wlh = $this->makeWlhLink( $title,
-			wfMsgExt( 'nlinks', array( 'parsemag', 'escape'),
-				$wgLang->formatNum( $result->value ) ), $skin );
-		return wfSpecialList( $link, $wlh );
+
+		$link = Linker::link( $title );
+		$wlh = $this->makeWlhLink(
+			$title,
+			$this->msg( 'nlinks' )->numParams( $result->value )->escaped()
+		);
+
+		return $this->getLanguage()->specialList( $link, $wlh );
 	}
-}
 
-/**
- * constructor
- */
-function wfSpecialMostlinked() {
-	list( $limit, $offset ) = wfCheckLimits();
-
-	$wpp = new MostlinkedPage();
-
-	$wpp->doQuery( $offset, $limit );
+	protected function getGroupName() {
+		return 'highuse';
+	}
 }

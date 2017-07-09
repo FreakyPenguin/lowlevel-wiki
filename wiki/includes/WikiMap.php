@@ -1,39 +1,118 @@
 <?php
+/**
+ * Tools for dealing with other locally-hosted wikis.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * http://www.gnu.org/copyleft/gpl.html
+ *
+ * @file
+ */
 
 /**
- * Helper tools for dealing with other locally-hosted wikis
+ * Helper tools for dealing with other wikis.
  */
 class WikiMap {
 
 	/**
 	 * Get a WikiReference object for $wikiID
 	 *
-	 * @param $wikiID String: wiki'd id (generally database name)
-	 * @return WikiReference object or null if the wiki was not found
+	 * @param string $wikiID Wiki'd id (generally database name)
+	 * @return WikiReference|null WikiReference object or null if the wiki was not found
 	 */
 	public static function getWiki( $wikiID ) {
+		$wikiReference = self::getWikiReferenceFromWgConf( $wikiID );
+		if ( $wikiReference ) {
+			return $wikiReference;
+		}
+
+		// Try sites, if $wgConf failed
+		return self::getWikiWikiReferenceFromSites( $wikiID );
+	}
+
+	/**
+	 * @param string $wikiID
+	 * @return WikiReference|null WikiReference object or null if the wiki was not found
+	 */
+	private static function getWikiReferenceFromWgConf( $wikiID ) {
 		global $wgConf;
 
 		$wgConf->loadFullData();
 
 		list( $major, $minor ) = $wgConf->siteFromDB( $wikiID );
-		if( isset( $major ) ) {
-			$server = $wgConf->get( 'wgServer', $wikiID, $major,
-				array( 'lang' => $minor, 'site' => $major ) );
-			$path = $wgConf->get( 'wgArticlePath', $wikiID, $major,
-				array( 'lang' => $minor, 'site' => $major ) );
-			return new WikiReference( $major, $minor, $server, $path );
-		} else {
+		if ( $major === null ) {
 			return null;
 		}
+		$server = $wgConf->get( 'wgServer', $wikiID, $major,
+			[ 'lang' => $minor, 'site' => $major ] );
+
+		$canonicalServer = $wgConf->get( 'wgCanonicalServer', $wikiID, $major,
+			[ 'lang' => $minor, 'site' => $major ] );
+		if ( $canonicalServer === false || $canonicalServer === null ) {
+			$canonicalServer = $server;
+		}
+
+		$path = $wgConf->get( 'wgArticlePath', $wikiID, $major,
+			[ 'lang' => $minor, 'site' => $major ] );
+
+		// If we don't have a canonical server or a path containing $1, the
+		// WikiReference isn't going to function properly. Just return null in
+		// that case.
+		if ( !is_string( $canonicalServer ) || !is_string( $path ) || strpos( $path, '$1' ) === false ) {
+			return null;
+		}
+
+		return new WikiReference( $canonicalServer, $path, $server );
 	}
-	
+
+	/**
+	 * @param string $wikiID
+	 * @return WikiReference|null WikiReference object or null if the wiki was not found
+	 */
+	private static function getWikiWikiReferenceFromSites( $wikiID ) {
+		$siteLookup = \MediaWiki\MediaWikiServices::getInstance()->getSiteLookup();
+		$site = $siteLookup->getSite( $wikiID );
+
+		if ( !$site instanceof MediaWikiSite ) {
+			// Abort if not a MediaWikiSite, as this is about Wikis
+			return null;
+		}
+
+		$urlParts = wfParseUrl( $site->getPageUrl() );
+		if ( $urlParts === false || !isset( $urlParts['path'] ) || !isset( $urlParts['host'] ) ) {
+			// We can't create a meaningful WikiReference without URLs
+			return null;
+		}
+
+		// XXX: Check whether path contains a $1?
+		$path = $urlParts['path'];
+		if ( isset( $urlParts['query'] ) ) {
+			$path .= '?' . $urlParts['query'];
+		}
+
+		$canonicalServer = isset( $urlParts['scheme'] ) ? $urlParts['scheme'] : 'http';
+		$canonicalServer .= '://' . $urlParts['host'];
+
+		return new WikiReference( $canonicalServer, $path );
+	}
+
 	/**
 	 * Convenience to get the wiki's display name
 	 *
 	 * @todo We can give more info than just the wiki id!
-	 * @param $wikiID String: wiki'd id (generally database name)
-	 * @return Wiki's name or $wiki_id if the wiki was not found
+	 * @param string $wikiID Wiki'd id (generally database name)
+	 * @return string|int Wiki's name or $wiki_id if the wiki was not found
 	 */
 	public static function getWikiName( $wikiID ) {
 		$wiki = WikiMap::getWiki( $wikiID );
@@ -47,27 +126,24 @@ class WikiMap {
 	/**
 	 * Convenience to get a link to a user page on a foreign wiki
 	 *
-	 * @param $wikiID String: wiki'd id (generally database name)
-	 * @param $user String: user name (must be normalised before calling this function!)
-	 * @param $text String: link's text; optional, default to "User:$user"
-	 * @return String: HTML link or false if the wiki was not found
+	 * @param string $wikiID Wiki'd id (generally database name)
+	 * @param string $user User name (must be normalised before calling this function!)
+	 * @param string $text Link's text; optional, default to "User:$user"
+	 * @return string HTML link or false if the wiki was not found
 	 */
-	public static function foreignUserLink( $wikiID, $user, $text=null ) {
+	public static function foreignUserLink( $wikiID, $user, $text = null ) {
 		return self::makeForeignLink( $wikiID, "User:$user", $text );
 	}
 
 	/**
 	 * Convenience to get a link to a page on a foreign wiki
 	 *
-	 * @param $wikiID String: wiki'd id (generally database name)
-	 * @param $page String: page name (must be normalised before calling this function!)
-	 * @param $text String: link's text; optional, default to $page
-	 * @return String: HTML link or false if the wiki was not found
+	 * @param string $wikiID Wiki'd id (generally database name)
+	 * @param string $page Page name (must be normalised before calling this function!)
+	 * @param string $text Link's text; optional, default to $page
+	 * @return string HTML link or false if the wiki was not found
 	 */
-	public static function makeForeignLink( $wikiID, $page, $text=null ) {
-		global $wgUser;
-		$sk = $wgUser->getSkin();
-
+	public static function makeForeignLink( $wikiID, $page, $text = null ) {
 		if ( !$text ) {
 			$text = $page;
 		}
@@ -77,23 +153,25 @@ class WikiMap {
 			return false;
 		}
 
-		return $sk->makeExternalLink( $url, $text );
+		return Linker::makeExternalLink( $url, $text );
 	}
 
 	/**
 	 * Convenience to get a url to a page on a foreign wiki
 	 *
-	 * @param $wikiID String: wiki'd id (generally database name)
-	 * @param $page String: page name (must be normalised before calling this function!)
-	 * @return String: URL or false if the wiki was not found
+	 * @param string $wikiID Wiki'd id (generally database name)
+	 * @param string $page Page name (must be normalised before calling this function!)
+	 * @param string|null $fragmentId
+	 *
+	 * @return string|bool URL or false if the wiki was not found
 	 */
-	public static function getForeignURL( $wikiID, $page ) {
+	public static function getForeignURL( $wikiID, $page, $fragmentId = null ) {
 		$wiki = WikiMap::getWiki( $wikiID );
-		
+
 		if ( $wiki ) {
-			return $wiki->getUrl( $page );
+			return $wiki->getFullUrl( $page, $fragmentId );
 		}
-			
+
 		return false;
 	}
 }
@@ -102,63 +180,101 @@ class WikiMap {
  * Reference to a locally-hosted wiki
  */
 class WikiReference {
-	private $mMinor; ///< 'en', 'meta', 'mediawiki', etc
-	private $mMajor; ///< 'wiki', 'wiktionary', etc
-	private $mServer; ///< server override, 'www.mediawiki.org'
-	private $mPath;   ///< path override, '/wiki/$1'
+	private $mCanonicalServer; ///< canonical server URL, e.g. 'https://www.mediawiki.org'
+	private $mServer; ///< server URL, may be protocol-relative, e.g. '//www.mediawiki.org'
+	private $mPath;   ///< path, '/wiki/$1'
 
-	public function __construct( $major, $minor, $server, $path ) {
-		$this->mMajor = $major;
-		$this->mMinor = $minor;
-		$this->mServer = $server;
+	/**
+	 * @param string $canonicalServer
+	 * @param string $path
+	 * @param null|string $server
+	 */
+	public function __construct( $canonicalServer, $path, $server = null ) {
+		$this->mCanonicalServer = $canonicalServer;
 		$this->mPath = $path;
-	}
-
-	public function getHostname() {
-		$prefixes = array( 'http://', 'https://' );
-		foreach ( $prefixes as $prefix ) {
-			if ( substr( $this->mServer, 0, strlen( $prefix ) ) ) {
-				return substr( $this->mServer, strlen( $prefix ) );
-			}
-		}
-		throw new MWException( "Invalid hostname for wiki {$this->mMinor}.{$this->mMajor}" );
+		$this->mServer = $server === null ? $canonicalServer : $server;
 	}
 
 	/**
-	 * Get the the URL in a way to de displayed to the user
+	 * Get the URL in a way to be displayed to the user
 	 * More or less Wikimedia specific
 	 *
-	 * @return String
+	 * @return string
 	 */
 	public function getDisplayName() {
-		$url = $this->getUrl( '' );
-		$url = preg_replace( '!^https?://!', '', $url );
-		$url = preg_replace( '!/index\.php(\?title=|/)$!', '/', $url );
-		$url = preg_replace( '!/wiki/$!', '/', $url );
-		$url = preg_replace( '!/$!', '', $url );
-		return $url;
+		$parsed = wfParseUrl( $this->mCanonicalServer );
+		if ( $parsed ) {
+			return $parsed['host'];
+		} else {
+			// Invalid server spec.
+			// There's no sane thing to do here, so just return the canonical server name in full.
+			return $this->mCanonicalServer;
+		}
 	}
 
 	/**
 	 * Helper function for getUrl()
 	 *
-	 * @todo FIXME: this may be generalized...
-	 * @param $page String: page name (must be normalised before calling this function!)
-	 * @return String: Url fragment
+	 * @todo FIXME: This may be generalized...
+	 *
+	 * @param string $page Page name (must be normalised before calling this function!
+	 *  May contain a section part.)
+	 * @param string|null $fragmentId
+	 *
+	 * @return string relative URL, without the server part.
 	 */
-	private function getLocalUrl( $page ) {
-		return str_replace( '$1', wfUrlEncode( str_replace( ' ', '_', $page ) ), $this->mPath );
+	private function getLocalUrl( $page, $fragmentId = null ) {
+		$page = wfUrlencode( str_replace( ' ', '_', $page ) );
+
+		if ( is_string( $fragmentId ) && $fragmentId !== '' ) {
+			$page .= '#' . wfUrlencode( $fragmentId );
+		}
+
+		return str_replace( '$1', $page, $this->mPath );
 	}
 
 	/**
-	 * Get a URL to a page on this foreign wiki
+	 * Get a canonical (i.e. based on $wgCanonicalServer) URL to a page on this foreign wiki
 	 *
-	 * @param $page String: page name (must be normalised before calling this function!)
-	 * @return String: Url
+	 * @param string $page Page name (must be normalised before calling this function!)
+	 * @param string|null $fragmentId
+	 *
+	 * @return string Url
 	 */
-	public function getUrl( $page ) {
-		return
-			$this->mServer .
-			$this->getLocalUrl( $page );
+	public function getCanonicalUrl( $page, $fragmentId = null ) {
+		return $this->mCanonicalServer . $this->getLocalUrl( $page, $fragmentId );
+	}
+
+	/**
+	 * Get a canonical server URL
+	 * @return string
+	 */
+	public function getCanonicalServer() {
+		return $this->mCanonicalServer;
+	}
+
+	/**
+	 * Alias for getCanonicalUrl(), for backwards compatibility.
+	 * @param string $page
+	 * @param string|null $fragmentId
+	 *
+	 * @return string
+	 */
+	public function getUrl( $page, $fragmentId = null ) {
+		return $this->getCanonicalUrl( $page, $fragmentId );
+	}
+
+	/**
+	 * Get a URL based on $wgServer, like Title::getFullURL() would produce
+	 * when called locally on the wiki.
+	 *
+	 * @param string $page Page name (must be normalized before calling this function!)
+	 * @param string|null $fragmentId
+	 *
+	 * @return string URL
+	 */
+	public function getFullUrl( $page, $fragmentId = null ) {
+		return $this->mServer .
+			$this->getLocalUrl( $page, $fragmentId );
 	}
 }

@@ -1,12 +1,35 @@
 <?php
 /**
  * Minify a file or set of files
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * http://www.gnu.org/copyleft/gpl.html
+ *
+ * @file
+ * @ingroup Maintenance
  */
 
-require_once( dirname( __FILE__ ) . '/Maintenance.php' );
+require_once __DIR__ . '/Maintenance.php';
 
+/**
+ * Maintenance script that minifies a file or set of files.
+ *
+ * @ingroup Maintenance
+ */
 class MinifyScript extends Maintenance {
-	var $outDir;
+	public $outDir;
 
 	public function __construct() {
 		parent::__construct();
@@ -17,16 +40,10 @@ class MinifyScript extends Maintenance {
 			"Directory for output. If this is not specified, and neither is --outfile, then the\n" .
 			"output files will be sent to the same directories as the input files.",
 			false, true );
-		$this->addOption( 'js-statements-on-own-line',
-			"Boolean value for putting statements on their own line when minifying JavaScript.",
-			false, true );
-		$this->addOption( 'js-max-line-length',
-			"Maximum line length for JavaScript minification.",
-			false, true );
-		$this->mDescription = "Minify a file or set of files.\n\n" .
+		$this->addDescription( "Minify a file or set of files.\n\n" .
 			"If --outfile is not specified, then the output file names will have a .min extension\n" .
-			"added, e.g. jquery.js -> jquery.min.js.";
-
+			"added, e.g. jquery.js -> jquery.min.js."
+		);
 	}
 
 	public function execute() {
@@ -43,6 +60,7 @@ class MinifyScript extends Maintenance {
 
 			// Minify one file
 			$this->minify( $this->getArg( 0 ), $this->getOption( 'outfile' ) );
+
 			return;
 		}
 
@@ -80,12 +98,11 @@ class MinifyScript extends Maintenance {
 			$this->error( "No file extension, cannot determine type: $fileName" );
 			exit( 1 );
 		}
+
 		return substr( $fileName, $dotPos + 1 );
 	}
 
 	public function minify( $inPath, $outPath ) {
-		global $wgResourceLoaderMinifierStatementsOnOwnLine, $wgResourceLoaderMinifierMaxLineLength;
-
 		$extension = $this->getExtension( $inPath );
 		$this->output( basename( $inPath ) . ' -> ' . basename( $outPath ) . '...' );
 
@@ -102,10 +119,7 @@ class MinifyScript extends Maintenance {
 
 		switch ( $extension ) {
 			case 'js':
-				$outText = JavaScriptMinifier::minify( $inText,
-					$this->getOption( 'js-statements-on-own-line', $wgResourceLoaderMinifierStatementsOnOwnLine ),
-					$this->getOption( 'js-max-line-length', $wgResourceLoaderMinifierMaxLineLength )
-				);
+				$outText = JavaScriptMinifier::minify( $inText );
 				break;
 			case 'css':
 				$outText = CSSMin::minify( $inText );
@@ -121,4 +135,4 @@ class MinifyScript extends Maintenance {
 }
 
 $maintClass = 'MinifyScript';
-require_once( RUN_MAINTENANCE_IF_MAIN );
+require_once RUN_MAINTENANCE_IF_MAIN;

@@ -28,12 +28,12 @@
  * @ingroup SpecialPage
  */
 class LonelyPagesPage extends PageQueryPage {
-
-	function getName() {
-		return "Lonelypages";
+	function __construct( $name = 'Lonelypages' ) {
+		parent::__construct( $name );
 	}
+
 	function getPageHeader() {
-		return wfMsgExt( 'lonelypagestext', array( 'parse' ) );
+		return $this->msg( 'lonelypagestext' )->parseAsBlock();
 	}
 
 	function sortDescending() {
@@ -43,37 +43,60 @@ class LonelyPagesPage extends PageQueryPage {
 	function isExpensive() {
 		return true;
 	}
-	function isSyndicated() { return false; }
 
-	function getSQL() {
-		$dbr = wfGetDB( DB_SLAVE );
-		list( $page, $pagelinks, $templatelinks ) = $dbr->tableNamesN( 'page', 'pagelinks', 'templatelinks' );
-
-		return
-		  "SELECT 'Lonelypages'  AS type,
-		          page_namespace AS namespace,
-		          page_title     AS title,
-		          page_title     AS value
-		     FROM $page
-		LEFT JOIN $pagelinks
-		       ON page_namespace=pl_namespace AND page_title=pl_title
-		LEFT JOIN $templatelinks
-				ON page_namespace=tl_namespace AND page_title=tl_title
-		    WHERE pl_namespace IS NULL
-		      AND page_namespace=".NS_MAIN."
-		      AND page_is_redirect=0
-			  AND tl_namespace IS NULL";
-
+	function isSyndicated() {
+		return false;
 	}
-}
 
-/**
- * Constructor
- */
-function wfSpecialLonelypages() {
-	list( $limit, $offset ) = wfCheckLimits();
+	function getQueryInfo() {
+		$tables = [ 'page', 'pagelinks', 'templatelinks' ];
+		$conds = [
+			'pl_namespace IS NULL',
+			'page_namespace' => MWNamespace::getContentNamespaces(),
+			'page_is_redirect' => 0,
+			'tl_namespace IS NULL'
+		];
+		$joinConds = [
+			'pagelinks' => [
+				'LEFT JOIN', [
+					'pl_namespace = page_namespace',
+					'pl_title = page_title'
+				]
+			],
+			'templatelinks' => [
+				'LEFT JOIN', [
+					'tl_namespace = page_namespace',
+					'tl_title = page_title'
+				]
+			]
+		];
 
-	$lpp = new LonelyPagesPage();
+		// Allow extensions to modify the query
+		Hooks::run( 'LonelyPagesQuery', [ &$tables, &$conds, &$joinConds ] );
 
-	return $lpp->doQuery( $offset, $limit );
+		return [
+			'tables' => $tables,
+			'fields' => [
+				'namespace' => 'page_namespace',
+				'title' => 'page_title',
+				'value' => 'page_title'
+			],
+			'conds' => $conds,
+			'join_conds' => $joinConds
+		];
+	}
+
+	function getOrderFields() {
+		// For some crazy reason ordering by a constant
+		// causes a filesort in MySQL 5
+		if ( count( MWNamespace::getContentNamespaces() ) > 1 ) {
+			return [ 'page_namespace', 'page_title' ];
+		} else {
+			return [ 'page_title' ];
+		}
+	}
+
+	protected function getGroupName() {
+		return 'maintenance';
+	}
 }

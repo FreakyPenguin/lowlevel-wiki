@@ -1,6 +1,6 @@
 <?php
 /**
- * Do each user sequentially, since accounts can't be deleted
+ * Convert user options to the new `user_properties` table.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,47 +21,95 @@
  * @ingroup Maintenance
  */
 
-require_once( dirname( __FILE__ ) . '/Maintenance.php' );
+require_once __DIR__ . '/Maintenance.php';
 
+/**
+ * Maintenance script to convert user options to the new `user_properties` table.
+ *
+ * @ingroup Maintenance
+ */
 class ConvertUserOptions extends Maintenance {
 
 	private $mConversionCount = 0;
 
 	public function __construct() {
 		parent::__construct();
-		$this->mDescription = "Convert user options from old to new system";
+		$this->addDescription( 'Convert user options from old to new system' );
+		$this->setBatchSize( 50 );
 	}
 
 	public function execute() {
-		$this->output( "Beginning batch conversion of user options.\n" );
+		$this->output( "...batch conversion of user_options: " );
 		$id = 0;
-		$dbw = wfGetDB( DB_MASTER );
+		$dbw = $this->getDB( DB_MASTER );
 
-		while ( $id !== null ) {
-			$idCond = 'user_id>' . $dbw->addQuotes( $id );
-			$optCond = "user_options!=" . $dbw->addQuotes( '' ); // For compatibility
-			$res = $dbw->select( 'user', '*',
-					array( $optCond, $idCond ), __METHOD__,
-					array( 'LIMIT' => 50, 'FOR UPDATE' ) );
-			$id = $this->convertOptionBatch( $res, $dbw );
-			$dbw->commit();
+		if ( !$dbw->fieldExists( 'user', 'user_options', __METHOD__ ) ) {
+			$this->output( "nothing to migrate. " );
 
-			wfWaitForSlaves( 1 );
-
-			if ( $id )
-				$this->output( "--Converted to ID $id\n" );
+			return;
 		}
-		$this->output( "Conversion done. Converted " . $this->mConversionCount . " user records.\n" );
+		while ( $id !== null ) {
+			$res = $dbw->select( 'user',
+				[ 'user_id', 'user_options' ],
+				[
+					'user_id > ' . $dbw->addQuotes( $id ),
+					"user_options != " . $dbw->addQuotes( '' ),
+				],
+				__METHOD__,
+				[
+					'ORDER BY' => 'user_id',
+					'LIMIT' => $this->mBatchSize,
+				]
+			);
+			$id = $this->convertOptionBatch( $res, $dbw );
+
+			wfWaitForSlaves();
+
+			if ( $id ) {
+				$this->output( "--Converted to ID $id\n" );
+			}
+		}
+		$this->output( "done. Converted " . $this->mConversionCount . " user records.\n" );
 	}
 
+	/**
+	 * @param ResultWrapper $res
+	 * @param Database $dbw
+	 * @return null|int
+	 */
 	function convertOptionBatch( $res, $dbw ) {
 		$id = null;
 		foreach ( $res as $row ) {
 			$this->mConversionCount++;
+			$insertRows = [];
+			foreach ( explode( "\n", $row->user_options ) as $s ) {
+				$m = [];
+				if ( !preg_match( "/^(.[^=]*)=(.*)$/", $s, $m ) ) {
+					continue;
+				}
 
-			$u = User::newFromRow( $row );
+				// MW < 1.16 would save even default values. Filter them out
+				// here (as in User) to avoid adding many unnecessary rows.
+				$defaultOption = User::getDefaultOption( $m[1] );
+				if ( is_null( $defaultOption ) || $m[2] != $defaultOption ) {
+					$insertRows[] = [
+						'up_user' => $row->user_id,
+						'up_property' => $m[1],
+						'up_value' => $m[2],
+					];
+				}
+			}
 
-			$u->saveSettings();
+			if ( count( $insertRows ) ) {
+				$dbw->insert( 'user_properties', $insertRows, __METHOD__, [ 'IGNORE' ] );
+			}
+
+			$dbw->update(
+				'user',
+				[ 'user_options' => '' ],
+				[ 'user_id' => $row->user_id ],
+				__METHOD__
+			);
 			$id = $row->user_id;
 		}
 
@@ -70,4 +118,4 @@ class ConvertUserOptions extends Maintenance {
 }
 
 $maintClass = "ConvertUserOptions";
-require_once( RUN_MAINTENANCE_IF_MAIN );
+require_once RUN_MAINTENANCE_IF_MAIN;

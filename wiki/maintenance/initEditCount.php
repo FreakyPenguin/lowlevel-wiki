@@ -22,43 +22,39 @@
  * @ingroup Maintenance
  */
 
-require_once( dirname( __FILE__ ) . '/Maintenance.php' );
+require_once __DIR__ . '/Maintenance.php';
 
 class InitEditCount extends Maintenance {
 	public function __construct() {
 		parent::__construct();
 		$this->addOption( 'quick', 'Force the update to be done in a single query' );
 		$this->addOption( 'background', 'Force replication-friendly mode; may be inefficient but
-		avoids locking tables or lagging slaves with large updates;
-		calculates counts on a slave if possible.
+		avoids locking tables or lagging replica DBs with large updates;
+		calculates counts on a replica DB if possible.
 
-Background mode will be automatically used if the server is MySQL 4.0
-(which does not support subqueries) or if multiple servers are listed
+Background mode will be automatically used if multiple servers are listed
 in the load balancer, usually indicating a replication environment.' );
-		$this->mDescription = "Batch-recalculate user_editcount fields from the revision table";
+		$this->addDescription( 'Batch-recalculate user_editcount fields from the revision table' );
 	}
 
 	public function execute() {
-		$dbw = wfGetDB( DB_MASTER );
+		$dbw = $this->getDB( DB_MASTER );
 		$user = $dbw->tableName( 'user' );
 		$revision = $dbw->tableName( 'revision' );
 
-		$dbver = $dbw->getServerVersion();
-
 		// Autodetect mode...
-		$backgroundMode = wfGetLB()->getServerCount() > 1 ||
-			( $dbw instanceof DatabaseMysql && version_compare( $dbver, '4.1' ) < 0 );
-
 		if ( $this->hasOption( 'background' ) ) {
 			$backgroundMode = true;
 		} elseif ( $this->hasOption( 'quick' ) ) {
 			$backgroundMode = false;
+		} else {
+			$backgroundMode = wfGetLB()->getServerCount() > 1;
 		}
 
 		if ( $backgroundMode ) {
 			$this->output( "Using replication-friendly background mode...\n" );
 
-			$dbr = wfGetDB( DB_SLAVE );
+			$dbr = $this->getDB( DB_REPLICA );
 			$chunkSize = 100;
 			$lastUser = $dbr->selectField( 'user', 'MAX(user_id)', '', __METHOD__ );
 
@@ -78,8 +74,8 @@ in the load balancer, usually indicating a replication environment.' );
 
 				foreach ( $result as $row ) {
 					$dbw->update( 'user',
-						array( 'user_editcount' => $row->user_editcount ),
-						array( 'user_id' => $row->user_id ),
+						[ 'user_editcount' => $row->user_editcount ],
+						[ 'user_id' => $row->user_id ],
 						__METHOD__ );
 					++$migrated;
 				}
@@ -93,10 +89,9 @@ in the load balancer, usually indicating a replication environment.' );
 					$delta,
 					$rate ) );
 
-				wfWaitForSlaves( 10 );
+				wfWaitForSlaves();
 			}
 		} else {
-			// Subselect should work on modern MySQLs etc
 			$this->output( "Using single-query mode...\n" );
 			$sql = "UPDATE $user SET user_editcount=(SELECT COUNT(*) FROM $revision WHERE rev_user=user_id)";
 			$dbw->query( $sql );
@@ -107,4 +102,4 @@ in the load balancer, usually indicating a replication environment.' );
 }
 
 $maintClass = "InitEditCount";
-require_once( RUN_MAINTENANCE_IF_MAIN );
+require_once RUN_MAINTENANCE_IF_MAIN;

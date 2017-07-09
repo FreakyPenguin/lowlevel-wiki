@@ -27,60 +27,71 @@
  * @ingroup SpecialPage
  */
 class WantedPagesPage extends WantedQueryPage {
-	var $nlinks;
 
-	function __construct( $inc = false, $nlinks = true ) {
+	function __construct( $name = 'Wantedpages' ) {
+		parent::__construct( $name );
+	}
+
+	function isIncludable() {
+		return true;
+	}
+
+	function execute( $par ) {
+		$inc = $this->including();
+
+		if ( $inc ) {
+			$this->limit = (int)$par;
+			$this->offset = 0;
+		}
 		$this->setListoutput( $inc );
-		$this->nlinks = $nlinks;
+		$this->shownavigation = !$inc;
+		parent::execute( $par );
 	}
 
-	function getName() {
-		return 'Wantedpages';
+	function getQueryInfo() {
+		$count = $this->getConfig()->get( 'WantedPagesThreshold' ) - 1;
+		$query = [
+			'tables' => [
+				'pagelinks',
+				'pg1' => 'page',
+				'pg2' => 'page'
+			],
+			'fields' => [
+				'namespace' => 'pl_namespace',
+				'title' => 'pl_title',
+				'value' => 'COUNT(*)'
+			],
+			'conds' => [
+				'pg1.page_namespace IS NULL',
+				"pl_namespace NOT IN ( '" . NS_USER . "', '" . NS_USER_TALK . "' )",
+				"pg2.page_namespace != '" . NS_MEDIAWIKI . "'"
+			],
+			'options' => [
+				'HAVING' => [
+					"COUNT(*) > $count",
+					"COUNT(*) > SUM(pg2.page_is_redirect)"
+				],
+				'GROUP BY' => [ 'pl_namespace', 'pl_title' ]
+			],
+			'join_conds' => [
+				'pg1' => [
+					'LEFT JOIN', [
+						'pg1.page_namespace = pl_namespace',
+						'pg1.page_title = pl_title'
+					]
+				],
+				'pg2' => [ 'LEFT JOIN', 'pg2.page_id = pl_from' ]
+			]
+		];
+		// Replacement for the WantedPages::getSQL hook
+		// Avoid PHP 7.1 warning from passing $this by reference
+		$wantedPages = $this;
+		Hooks::run( 'WantedPages::getQueryInfo', [ &$wantedPages, &$query ] );
+
+		return $query;
 	}
 
-	function getSQL() {
-		global $wgWantedPagesThreshold;
-		$count = $wgWantedPagesThreshold - 1;
-		$dbr = wfGetDB( DB_SLAVE );
-		$pagelinks = $dbr->tableName( 'pagelinks' );
-		$page      = $dbr->tableName( 'page' );
-		$sql = "SELECT 'Wantedpages' AS type,
-				pl_namespace AS namespace,
-				pl_title AS title,
-				COUNT(*) AS value
-			FROM $pagelinks
-			LEFT JOIN $page AS pg1
-			ON pl_namespace = pg1.page_namespace AND pl_title = pg1.page_title
-			LEFT JOIN $page AS pg2
-			ON pl_from = pg2.page_id
-			WHERE pg1.page_namespace IS NULL
-			AND pl_namespace NOT IN ( " . NS_USER . ", ". NS_USER_TALK . ")
-			AND pg2.page_namespace != " . NS_MEDIAWIKI . "
-			GROUP BY pl_namespace, pl_title
-			HAVING COUNT(*) > $count";
-
-		wfRunHooks( 'WantedPages::getSQL', array( &$this, &$sql ) );
-		return $sql;
+	protected function getGroupName() {
+		return 'maintenance';
 	}
-}
-
-/**
- * constructor
- */
-function wfSpecialWantedpages( $par = null, $specialPage ) {
-	$inc = $specialPage->including();
-
-	if ( $inc ) {
-		@list( $limit, $nlinks ) = explode( '/', $par, 2 );
-		$limit = (int)$limit;
-		$nlinks = $nlinks === 'nlinks';
-		$offset = 0;
-	} else {
-		list( $limit, $offset ) = wfCheckLimits();
-		$nlinks = true;
-	}
-
-	$wpp = new WantedPagesPage( $inc, $nlinks );
-
-	$wpp->doQuery( $offset, $limit, !$inc );
 }

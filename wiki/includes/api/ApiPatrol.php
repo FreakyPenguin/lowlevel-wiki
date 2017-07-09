@@ -24,37 +24,56 @@
  * @file
  */
 
-if ( !defined( 'MEDIAWIKI' ) ) {
-	require_once ( 'ApiBase.php' );
-}
-
 /**
  * Allows user to patrol pages
  * @ingroup API
  */
 class ApiPatrol extends ApiBase {
 
-	public function __construct( $main, $action ) {
-		parent::__construct( $main, $action );
-	}
-
 	/**
 	 * Patrols the article or provides the reason the patrol failed.
 	 */
 	public function execute() {
 		$params = $this->extractRequestParams();
+		$this->requireOnlyOneParameter( $params, 'rcid', 'revid' );
 
-		$rc = RecentChange::newFromID( $params['rcid'] );
-		if ( !$rc instanceof RecentChange ) {
-			$this->dieUsageMsg( array( 'nosuchrcid', $params['rcid'] ) );
+		if ( isset( $params['rcid'] ) ) {
+			$rc = RecentChange::newFromId( $params['rcid'] );
+			if ( !$rc ) {
+				$this->dieUsageMsg( [ 'nosuchrcid', $params['rcid'] ] );
+			}
+		} else {
+			$rev = Revision::newFromId( $params['revid'] );
+			if ( !$rev ) {
+				$this->dieUsageMsg( [ 'nosuchrevid', $params['revid'] ] );
+			}
+			$rc = $rev->getRecentChange();
+			if ( !$rc ) {
+				$this->dieUsage(
+					'The revision ' . $params['revid'] . " can't be patrolled as it's too old",
+					'notpatrollable'
+				);
+			}
 		}
-		$retval = RecentChange::markPatrolled( $params['rcid'] );
+
+		$user = $this->getUser();
+		$tags = $params['tags'];
+
+		// Check if user can add tags
+		if ( !is_null( $tags ) ) {
+			$ableToTag = ChangeTags::canAddTagsAccompanyingChange( $tags, $user );
+			if ( !$ableToTag->isOK() ) {
+				$this->dieStatus( $ableToTag );
+			}
+		}
+
+		$retval = $rc->doMarkPatrolled( $user, false, $tags );
 
 		if ( $retval ) {
 			$this->dieUsageMsg( reset( $retval ) );
 		}
 
-		$result = array( 'rcid' => intval( $rc->getAttribute( 'rc_id' ) ) );
+		$result = [ 'rcid' => intval( $rc->getAttribute( 'rc_id' ) ) ];
 		ApiQueryBase::addTitleInfo( $result, $rc->getTitle() );
 		$this->getResult()->addValue( null, $this->getModuleName(), $result );
 	}
@@ -68,47 +87,34 @@ class ApiPatrol extends ApiBase {
 	}
 
 	public function getAllowedParams() {
-		return array(
-			'token' => null,
-			'rcid' => array(
-				ApiBase::PARAM_TYPE => 'integer',
-				ApiBase::PARAM_REQUIRED => true
-			),
-		);
-	}
-
-	public function getParamDescription() {
-		return array(
-			'token' => 'Patrol token obtained from list=recentchanges',
-			'rcid' => 'Recentchanges ID to patrol',
-		);
-	}
-
-	public function getDescription() {
-		return 'Patrol a page or revision';
-	}
-
-	public function getPossibleErrors() {
-		return array_merge( parent::getPossibleErrors(), array(
-			array( 'nosuchrcid', 'rcid' ),
-		) );
+		return [
+			'rcid' => [
+				ApiBase::PARAM_TYPE => 'integer'
+			],
+			'revid' => [
+				ApiBase::PARAM_TYPE => 'integer'
+			],
+			'tags' => [
+				ApiBase::PARAM_TYPE => 'tags',
+				ApiBase::PARAM_ISMULTI => true,
+			],
+		];
 	}
 
 	public function needsToken() {
-		return true;
-	}
-
-	public function getTokenSalt() {
 		return 'patrol';
 	}
 
-	protected function getExamples() {
-		return array(
-			'api.php?action=patrol&token=123abc&rcid=230672766'
-		);
+	protected function getExamplesMessages() {
+		return [
+			'action=patrol&token=123ABC&rcid=230672766'
+				=> 'apihelp-patrol-example-rcid',
+			'action=patrol&token=123ABC&revid=230672766'
+				=> 'apihelp-patrol-example-revid',
+		];
 	}
 
-	public function getVersion() {
-		return __CLASS__ . ': $Id: ApiPatrol.php 78437 2010-12-15 14:14:16Z catrope $';
+	public function getHelpUrls() {
+		return 'https://www.mediawiki.org/wiki/API:Patrol';
 	}
 }

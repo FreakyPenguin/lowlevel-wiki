@@ -1,19 +1,36 @@
 <?php
 /**
+ * Helper class for userOptions.php script.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * http://www.gnu.org/copyleft/gpl.html
+ *
  * @file
  * @ingroup Maintenance
  */
 
 // Options we will use
-$options = array( 'list', 'nowarn', 'quiet', 'usage', 'dry' );
-$optionsWithArgs = array( 'old', 'new' );
+$options = [ 'list', 'nowarn', 'quiet', 'usage', 'dry' ];
+$optionsWithArgs = [ 'old', 'new' ];
 
-require_once( dirname( __FILE__ ) . '/commandLine.inc' );
+require_once __DIR__ . '/commandLine.inc';
 
 /**
  * @ingroup Maintenance
  */
-class userOptions {
+class UserOptions {
 	public $mQuick;
 	public $mQuiet;
 	public $mDry;
@@ -21,24 +38,34 @@ class userOptions {
 	public $mOldValue;
 	public $mNewValue;
 
-	private $mMode, $mReady ;
+	private $mMode, $mReady;
 
-	/** Constructor. Will show usage and exit if script options are not correct */
+	/**
+	 * Constructor. Will show usage and exit if script options are not correct
+	 * @param array $opts
+	 * @param array $args
+	 */
 	function __construct( $opts, $args ) {
 		if ( !$this->checkOpts( $opts, $args ) ) {
-			userOptions::showUsageAndExit();
+			UserOptions::showUsageAndExit();
 		} else {
 			$this->mReady = $this->initializeOpts( $opts, $args );
 		}
 	}
 
-
-	/** This is used to check options. Only needed on construction */
+	/**
+	 * This is used to check options. Only needed on construction
+	 *
+	 * @param array $opts
+	 * @param array $args
+	 *
+	 * @return bool
+	 */
 	private function checkOpts( $opts, $args ) {
 		// The three possible ways to run the script:
-		$list   = isset( $opts['list'] );
-		$usage  = isset( $opts['usage'] ) && ( count( $args ) <= 1 );
-		$change = isset( $opts['old'] ) && isset( $opts['new'] ) && ( count( $args ) <= 1 ) ;
+		$list = isset( $opts['list'] );
+		$usage = isset( $opts['usage'] ) && ( count( $args ) <= 1 );
+		$change = isset( $opts['old'] ) && isset( $opts['new'] ) && ( count( $args ) <= 1 );
 
 		// We want only one of them
 		$isValid = ( ( $list + $usage + $change ) == 1 );
@@ -46,23 +73,30 @@ class userOptions {
 		return $isValid;
 	}
 
-	/** load script options in the object */
+	/**
+	 * load script options in the object
+	 *
+	 * @param array $opts
+	 * @param array $args
+	 *
+	 * @return bool
+	 */
 	private function initializeOpts( $opts, $args ) {
 
 		$this->mQuick = isset( $opts['nowarn'] );
 		$this->mQuiet = isset( $opts['quiet'] );
-		$this->mDry   = isset( $opts['dry'] );
+		$this->mDry = isset( $opts['dry'] );
 
 		// Set object properties, specially 'mMode' used by run()
 		if ( isset( $opts['list'] ) ) {
-			$this->mMode = 'LISTER' ;
+			$this->mMode = 'LISTER';
 		} elseif ( isset( $opts['usage'] ) ) {
-			$this->mMode = 'USAGER' ;
-			$this->mAnOption = isset( $args[0] ) ? $args[0] : false ;
+			$this->mMode = 'USAGER';
+			$this->mAnOption = isset( $args[0] ) ? $args[0] : false;
 		} elseif ( isset( $opts['old'] ) && isset( $opts['new'] ) ) {
-			$this->mMode = 'CHANGER' ;
-			$this->mOldValue = $opts['old'] ;
-			$this->mNewValue = $opts['new'] ;
+			$this->mMode = 'CHANGER';
+			$this->mOldValue = $opts['old'];
+			$this->mNewValue = $opts['new'];
 			$this->mAnOption = $args[0];
 		} else {
 			die( "There is a bug in the software, this should never happen\n" );
@@ -71,22 +105,23 @@ class userOptions {
 		return true;
 	}
 
-	// Dumb stuff to run a mode.
+	/**
+	 * Dumb stuff to run a mode.
+	 */
 	public function run() {
 		if ( !$this->mReady ) {
 			return false;
 		}
 
-		$this-> { $this->mMode } ( );
+		$this->{$this->mMode}();
 
+		return true;
 	}
 
-	#
-	# Modes.
-	#
-
-	/** List default options and their value */
-	private function LISTER( ) {
+	/**
+	 * List default options and their value
+	 */
+	private function LISTER() {
 		$def = User::getDefaultOptions();
 		ksort( $def );
 		$maxOpt = 0;
@@ -98,18 +133,20 @@ class userOptions {
 		}
 	}
 
-	/** List options usage */
-	private function USAGER( ) {
-		$ret = array();
+	/**
+	 * List options usage
+	 */
+	private function USAGER() {
+		$ret = [];
 		$defaultOptions = User::getDefaultOptions();
 
-		// We list user by user_id from one of the slave database
-		$dbr = wfGetDB( DB_SLAVE );
+		// We list user by user_id from one of the replica DBs
+		$dbr = wfGetDB( DB_REPLICA );
 		$result = $dbr->select( 'user',
-			array( 'user_id' ),
-			array(),
+			[ 'user_id' ],
+			[],
 			__METHOD__
-			);
+		);
 
 		foreach ( $result as $id ) {
 
@@ -125,15 +162,18 @@ class userOptions {
 
 				$userValue = $user->getOption( $this->mAnOption );
 				if ( $userValue <> $defaultOptions[$this->mAnOption] ) {
+					// @codingStandardsIgnoreStart Ignore silencing errors is discouraged warning
 					@$ret[$this->mAnOption][$userValue]++;
+					// @codingStandardsIgnoreEnd
 				}
-
 			} else {
 
 				foreach ( $defaultOptions as $name => $defaultValue ) {
 					$userValue = $user->getOption( $name );
 					if ( $userValue <> $defaultValue ) {
+						// @codingStandardsIgnoreStart Ignore silencing errors is discouraged warning
 						@$ret[$name][$userValue]++;
+						// @codingStandardsIgnoreEnd
 					}
 				}
 			}
@@ -148,18 +188,19 @@ class userOptions {
 		}
 	}
 
-
-	/** Change our users options */
-	private function CHANGER( ) {
+	/**
+	 * Change our users options
+	 */
+	private function CHANGER() {
 		$this->warn();
 
-		// We list user by user_id from one of the slave database
-		$dbr = wfGetDB( DB_SLAVE );
+		// We list user by user_id from one of the replica DBs
+		$dbr = wfGetDB( DB_REPLICA );
 		$result = $dbr->select( 'user',
-			array( 'user_id' ),
-			array(),
+			[ 'user_id' ],
+			[],
 			__METHOD__
-			);
+		);
 
 		foreach ( $result as $id ) {
 
@@ -171,7 +212,8 @@ class userOptions {
 			if ( $curValue == $this->mOldValue ) {
 
 				if ( !$this->mQuiet ) {
-					print "Setting {$this->mAnOption} for $username from '{$this->mOldValue}' to '{$this->mNewValue}'): ";
+					print "Setting {$this->mAnOption} for $username from '{$this->mOldValue}' " .
+						"to '{$this->mNewValue}'): ";
 				}
 
 				// Change value
@@ -181,32 +223,31 @@ class userOptions {
 				if ( !$this->mDry ) {
 					$user->saveSettings();
 				}
-				if ( !$this->mQuiet ) { print " OK\n"; }
-
+				if ( !$this->mQuiet ) {
+					print " OK\n";
+				}
 			} elseif ( !$this->mQuiet ) {
 				print "Not changing '$username' using <{$this->mAnOption}> = '$curValue'\n";
 			}
 		}
 	}
 
-
-	/** Return an array of option names */
+	/**
+	 * Return an array of option names
+	 * @return array
+	 */
 	public static function getDefaultOptionsNames() {
 		$def = User::getDefaultOptions();
-		$ret = array();
+		$ret = [];
 		foreach ( $def as $optname => $defaultValue ) {
 			array_push( $ret, $optname );
 		}
+
 		return $ret;
 	}
 
-
-	#
-	# Helper methods
-	#
-
 	public static function showUsageAndExit() {
-print <<<USAGE
+		print <<<USAGE
 
 This script pass through all users and change one of their options.
 The new option is NOT validated.
@@ -230,24 +271,27 @@ Options:
 	--dry   : do not save user settings back to database
 
 USAGE;
-	exit( 0 );
+		exit( 0 );
 	}
 
-	/** The warning message and countdown */
+	/**
+	 * The warning message and countdown
+	 * @return bool
+	 */
 	public function warn() {
 
 		if ( $this->mQuick ) {
 			return true;
 		}
 
-print <<<WARN
+		print <<<WARN
 The script is about to change the skin for ALL USERS in the database.
 Users with option <$this->mAnOption> = '$this->mOldValue' will be made to use '$this->mNewValue'.
 
 Abort with control-c in the next five seconds....
 WARN;
 		wfCountDown( 5 );
+
 		return true;
 	}
-
 }

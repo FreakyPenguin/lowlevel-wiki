@@ -31,72 +31,130 @@ class SpecialPreferences extends SpecialPage {
 		parent::__construct( 'Preferences' );
 	}
 
-	function execute( $par ) {
-		global $wgOut, $wgUser, $wgRequest;
+	public function doesWrites() {
+		return true;
+	}
 
+	public function execute( $par ) {
 		$this->setHeaders();
 		$this->outputHeader();
-		$wgOut->disallowUserJs();  # Prevent hijacked user scripts from sniffing passwords etc.
+		$out = $this->getOutput();
+		$out->disallowUserJs(); # Prevent hijacked user scripts from sniffing passwords etc.
 
-		if ( $wgUser->isAnon() ) {
-			$wgOut->showErrorPage( 'prefsnologin', 'prefsnologintext', array( $this->getTitle()->getPrefixedDBkey() ) );
-			return;
-		}
-		if ( wfReadOnly() ) {
-			$wgOut->readOnlyPage();
-			return;
-		}
+		$this->requireLogin( 'prefsnologintext2' );
+		$this->checkReadOnly();
 
 		if ( $par == 'reset' ) {
 			$this->showResetForm();
+
 			return;
 		}
 
-		$wgOut->addModules( 'mediawiki.legacy.prefs' );
-		$wgOut->addModules( 'mediawiki.special.preferences' );
+		$out->addModules( 'mediawiki.special.preferences' );
+		$out->addModuleStyles( 'mediawiki.special.preferences.styles' );
 
-		if ( $wgRequest->getCheck( 'success' ) ) {
-			$wgOut->wrapWikiMsg(
-				"<div class=\"successbox\"><strong>\n$1\n</strong></div><div id=\"mw-pref-clear\"></div>",
-				'savedprefs'
+		$session = $this->getRequest()->getSession();
+		if ( $session->get( 'specialPreferencesSaveSuccess' ) ) {
+			// Remove session data for the success message
+			$session->remove( 'specialPreferencesSaveSuccess' );
+			$out->addModuleStyles( 'mediawiki.notification.convertmessagebox.styles' );
+
+			$out->addHTML(
+				Html::rawElement(
+					'div',
+					[
+						'class' => 'mw-preferences-messagebox mw-notify-success successbox',
+						'id' => 'mw-preferences-success',
+						'data-mw-autohide' => 'false',
+					],
+					Html::element( 'p', [], $this->msg( 'savedprefs' )->text() )
+				)
 			);
 		}
-		
-		if ( $wgRequest->getCheck( 'eauth' ) ) {
-			$wgOut->wrapWikiMsg( "<div class='error' style='clear: both;'>\n$1\n</div>",
-									'eauthentsent', $wgUser->getName() );
+
+		$this->addHelpLink( 'Help:Preferences' );
+
+		// Load the user from the master to reduce CAS errors on double post (T95839)
+		if ( $this->getRequest()->wasPosted() ) {
+			$user = $this->getUser()->getInstanceForUpdate() ?: $this->getUser();
+		} else {
+			$user = $this->getUser();
 		}
 
-		$htmlForm = Preferences::getFormObject( $wgUser );
-		$htmlForm->setSubmitCallback( array( 'Preferences', 'tryUISubmit' ) );
+		$htmlForm = Preferences::getFormObject( $user, $this->getContext() );
+		$htmlForm->setSubmitCallback( [ 'Preferences', 'tryUISubmit' ] );
+		$sectionTitles = $htmlForm->getPreferenceSections();
 
+		$prefTabs = '';
+		foreach ( $sectionTitles as $key ) {
+			$prefTabs .= Html::rawElement( 'li',
+				[
+					'role' => 'presentation',
+					'class' => ( $key === 'personal' ) ? 'selected' : null
+				],
+				Html::rawElement( 'a',
+					[
+						'id' => 'preftab-' . $key,
+						'role' => 'tab',
+						'href' => '#mw-prefsection-' . $key,
+						'aria-controls' => 'mw-prefsection-' . $key,
+						'aria-selected' => ( $key === 'personal' ) ? 'true' : 'false',
+						'tabIndex' => ( $key === 'personal' ) ? 0 : -1,
+					],
+					$htmlForm->getLegend( $key )
+				)
+			);
+		}
+
+		$out->addHTML(
+			Html::rawElement( 'ul',
+				[
+					'id' => 'preftoc',
+					'role' => 'tablist'
+				],
+				$prefTabs )
+		);
 		$htmlForm->show();
 	}
 
-	function showResetForm() {
-		global $wgOut;
+	private function showResetForm() {
+		if ( !$this->getUser()->isAllowed( 'editmyoptions' ) ) {
+			throw new PermissionsError( 'editmyoptions' );
+		}
 
-		$wgOut->addWikiMsg( 'prefs-reset-intro' );
+		$this->getOutput()->addWikiMsg( 'prefs-reset-intro' );
 
-		$htmlForm = new HTMLForm( array(), 'prefs-restore' );
+		$context = new DerivativeContext( $this->getContext() );
+		$context->setTitle( $this->getPageTitle( 'reset' ) ); // Reset subpage
+		$htmlForm = new HTMLForm( [], $context, 'prefs-restore' );
 
-		$htmlForm->setSubmitText( wfMsg( 'restoreprefs' ) );
-		$htmlForm->setTitle( $this->getTitle( 'reset' ) );
-		$htmlForm->setSubmitCallback( array( __CLASS__, 'submitReset' ) );
+		$htmlForm->setSubmitTextMsg( 'restoreprefs' );
+		$htmlForm->setSubmitDestructive();
+		$htmlForm->setSubmitCallback( [ $this, 'submitReset' ] );
 		$htmlForm->suppressReset();
 
 		$htmlForm->show();
 	}
 
-	static function submitReset( $formData ) {
-		global $wgUser, $wgOut;
-		$wgUser->resetOptions();
-		$wgUser->saveSettings();
+	public function submitReset( $formData ) {
+		if ( !$this->getUser()->isAllowed( 'editmyoptions' ) ) {
+			throw new PermissionsError( 'editmyoptions' );
+		}
 
-		$url = SpecialPage::getTitleFor( 'Preferences' )->getFullURL( 'success' );
+		$user = $this->getUser()->getInstanceForUpdate();
+		$user->resetOptions( 'all', $this->getContext() );
+		$user->saveSettings();
 
-		$wgOut->redirect( $url );
+		// Set session data for the success message
+		$this->getRequest()->getSession()->set( 'specialPreferencesSaveSuccess', 1 );
+
+		$url = $this->getPageTitle()->getFullUrlForRedirect();
+		$this->getOutput()->redirect( $url );
 
 		return true;
+	}
+
+	protected function getGroupName() {
+		return 'users';
 	}
 }

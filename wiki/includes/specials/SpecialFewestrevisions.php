@@ -28,12 +28,11 @@
  * @author Martin Drashkov
  */
 class FewestrevisionsPage extends QueryPage {
-
-	function getName() {
-		return 'Fewestrevisions';
+	function __construct( $name = 'Fewestrevisions' ) {
+		parent::__construct( $name );
 	}
 
-	function isExpensive() {
+	public function isExpensive() {
 		return true;
 	}
 
@@ -41,62 +40,72 @@ class FewestrevisionsPage extends QueryPage {
 		return false;
 	}
 
-	function getSql() {
-		$dbr = wfGetDB( DB_SLAVE );
-		list( $revision, $page ) = $dbr->tableNamesN( 'revision', 'page' );
-
-		return "SELECT 'Fewestrevisions' as type,
-				page_namespace as namespace,
-				page_title as title,
-				page_is_redirect as redirect,
-				COUNT(*) as value
-			FROM $revision
-			JOIN $page ON page_id = rev_page
-			WHERE page_namespace = " . NS_MAIN . "
-			GROUP BY page_namespace, page_title, page_is_redirect
-			HAVING COUNT(*) > 1";
-			// ^^^ This was probably here to weed out redirects.
-			// Since we mark them as such now, it might be
-			// useful to remove this. People _do_ create pages
-			// and never revise them, they aren't necessarily
-			// redirects.
+	public function getQueryInfo() {
+		return [
+			'tables' => [ 'revision', 'page' ],
+			'fields' => [
+				'namespace' => 'page_namespace',
+				'title' => 'page_title',
+				'value' => 'COUNT(*)',
+				'redirect' => 'page_is_redirect'
+			],
+			'conds' => [
+				'page_namespace' => MWNamespace::getContentNamespaces(),
+				'page_id = rev_page' ],
+			'options' => [
+				'HAVING' => 'COUNT(*) > 1',
+				// ^^^ This was probably here to weed out redirects.
+				// Since we mark them as such now, it might be
+				// useful to remove this. People _do_ create pages
+				// and never revise them, they aren't necessarily
+				// redirects.
+				'GROUP BY' => [ 'page_namespace', 'page_title', 'page_is_redirect' ]
+			]
+		];
 	}
 
 	function sortDescending() {
 		return false;
 	}
 
+	/**
+	 * @param Skin $skin
+	 * @param object $result Database row
+	 * @return string
+	 */
 	function formatResult( $skin, $result ) {
-		global $wgLang, $wgContLang;
+		global $wgContLang;
 
 		$nt = Title::makeTitleSafe( $result->namespace, $result->title );
-		if( !$nt ) {
-			return '<!-- bad title -->';
+		if ( !$nt ) {
+			return Html::element(
+				'span',
+				[ 'class' => 'mw-invalidtitle' ],
+				Linker::getInvalidTitleDescription(
+					$this->getContext(),
+					$result->namespace,
+					$result->title
+				)
+			);
 		}
 
-		$text = $wgContLang->convert( $nt->getPrefixedText() );
+		$text = htmlspecialchars( $wgContLang->convert( $nt->getPrefixedText() ) );
+		$plink = Linker::linkKnown( $nt, $text );
 
-		$plink = $skin->linkKnown(
-			$nt,
-			$text
-		);
-
-		$nl = wfMsgExt( 'nrevisions', array( 'parsemag', 'escape' ),
-			$wgLang->formatNum( $result->value ) );
-		$redirect = $result->redirect ? ' - ' . wfMsgHtml( 'isredirect' ) : '';
-		$nlink = $skin->linkKnown(
+		$nl = $this->msg( 'nrevisions' )->numParams( $result->value )->escaped();
+		$redirect = isset( $result->redirect ) && $result->redirect ?
+			' - ' . $this->msg( 'isredirect' )->escaped() : '';
+		$nlink = Linker::linkKnown(
 			$nt,
 			$nl,
-			array(),
-			array( 'action' => 'history' )
+			[],
+			[ 'action' => 'history' ]
 		) . $redirect;
 
-		return wfSpecialList( $plink, $nlink );
+		return $this->getLanguage()->specialList( $plink, $nlink );
 	}
-}
 
-function wfSpecialFewestrevisions() {
-	list( $limit, $offset ) = wfCheckLimits();
-	$frp = new FewestrevisionsPage();
-	$frp->doQuery( $offset, $limit );
+	protected function getGroupName() {
+		return 'maintenance';
+	}
 }

@@ -29,95 +29,106 @@
  */
 class ShortPagesPage extends QueryPage {
 
-	function getName() {
-		return 'Shortpages';
-	}
-
-	/**
-	 * This query is indexed as of 1.5
-	 */
-	function isExpensive() {
-		return true;
+	function __construct( $name = 'Shortpages' ) {
+		parent::__construct( $name );
 	}
 
 	function isSyndicated() {
 		return false;
 	}
 
-	function getSQL() {
-		global $wgContentNamespaces;
+	public function getQueryInfo() {
+		$tables = [ 'page' ];
+		$conds = [
+			'page_namespace' => MWNamespace::getContentNamespaces(),
+			'page_is_redirect' => 0
+		];
+		$joinConds = [];
+		$options = [ 'USE INDEX' => [ 'page' => 'page_redirect_namespace_len' ] ];
 
-		$dbr = wfGetDB( DB_SLAVE );
-		$page = $dbr->tableName( 'page' );
-		$name = $dbr->addQuotes( $this->getName() );
+		// Allow extensions to modify the query
+		Hooks::run( 'ShortPagesQuery', [ &$tables, &$conds, &$joinConds, &$options ] );
 
-		$forceindex = $dbr->useIndexClause("page_len");
-
-		if ($wgContentNamespaces)
-			$nsclause = "page_namespace IN (" . $dbr->makeList($wgContentNamespaces) . ")";
-		else
-			$nsclause = "page_namespace = " . NS_MAIN;
-
-		return
-			"SELECT $name as type,
-				page_namespace as namespace,
-			        page_title as title,
-			        page_len AS value
-			FROM $page $forceindex
-			WHERE $nsclause AND page_is_redirect=0";
+		return [
+			'tables' => $tables,
+			'fields' => [
+				'namespace' => 'page_namespace',
+				'title' => 'page_title',
+				'value' => 'page_len'
+			],
+			'conds' => $conds,
+			'join_conds' => $joinConds,
+			'options' => $options
+		];
 	}
 
+	function getOrderFields() {
+		return [ 'page_len' ];
+	}
+
+	/**
+	 * @param IDatabase $db
+	 * @param ResultWrapper $res
+	 */
 	function preprocessResults( $db, $res ) {
 		# There's no point doing a batch check if we aren't caching results;
 		# the page must exist for it to have been pulled out of the table
-		if( $this->isCached() ) {
-			$batch = new LinkBatch();
-			foreach ( $res as $row ) {
-				$batch->add( $row->namespace, $row->title );
-			}
-			$batch->execute();
-			if ( $db->numRows( $res ) > 0 ) {
-				$db->dataSeek( $res, 0 );
-			}
+		if ( !$this->isCached() || !$res->numRows() ) {
+			return;
 		}
+
+		$batch = new LinkBatch();
+		foreach ( $res as $row ) {
+			$batch->add( $row->namespace, $row->title );
+		}
+		$batch->execute();
+
+		$res->seek( 0 );
 	}
 
 	function sortDescending() {
 		return false;
 	}
 
+	/**
+	 * @param Skin $skin
+	 * @param object $result Result row
+	 * @return string
+	 */
 	function formatResult( $skin, $result ) {
-		global $wgLang, $wgContLang;
-		$dm = $wgContLang->getDirMark();
+		$dm = $this->getLanguage()->getDirMark();
 
 		$title = Title::makeTitleSafe( $result->namespace, $result->title );
 		if ( !$title ) {
-			return '<!-- Invalid title ' .  htmlspecialchars( "{$result->namespace}:{$result->title}" ). '-->';
+			return Html::element( 'span', [ 'class' => 'mw-invalidtitle' ],
+				Linker::getInvalidTitleDescription( $this->getContext(), $result->namespace, $result->title ) );
 		}
-		$hlink = $skin->linkKnown(
+
+		$linkRenderer = $this->getLinkRenderer();
+		$hlink = $linkRenderer->makeKnownLink(
 			$title,
-			wfMsgHtml( 'hist' ),
-			array(),
-			array( 'action' => 'history' )
+			$this->msg( 'hist' )->text(),
+			[],
+			[ 'action' => 'history' ]
 		);
-		$plink = $this->isCached()
-					? $skin->link( $title )
-					: $skin->linkKnown( $title );
-		$size = wfMessage( 'nbytes', $wgLang->formatNum( $result->value ) )->escaped();
+		$hlinkInParentheses = $this->msg( 'parentheses' )->rawParams( $hlink )->escaped();
 
-		return $title->exists()
-				? "({$hlink}) {$dm}{$plink} {$dm}[{$size}]"
-				: "<del>({$hlink}) {$dm}{$plink} {$dm}[{$size}]</del>";
+		if ( $this->isCached() ) {
+			$plink = $linkRenderer->makeLink( $title );
+			$exists = $title->exists();
+		} else {
+			$plink = $linkRenderer->makeKnownLink( $title );
+			$exists = true;
+		}
+
+		$size = $this->msg( 'nbytes' )->numParams( $result->value )->escaped();
+
+		return $exists
+			? "${hlinkInParentheses} {$dm}{$plink} {$dm}[{$size}]"
+			: "<del>${hlinkInParentheses} {$dm}{$plink} {$dm}[{$size}]</del>";
 	}
-}
 
-/**
- * constructor
- */
-function wfSpecialShortpages() {
-	list( $limit, $offset ) = wfCheckLimits();
-
-	$spp = new ShortPagesPage();
-
-	return $spp->doQuery( $offset, $limit );
+	protected function getGroupName() {
+		return 'maintenance';
+	}
 }

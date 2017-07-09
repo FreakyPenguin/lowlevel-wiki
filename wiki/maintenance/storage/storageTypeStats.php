@@ -1,10 +1,29 @@
 <?php
+/**
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * http://www.gnu.org/copyleft/gpl.html
+ *
+ * @file
+ * @ingroup Maintenance ExternalStorage
+ */
 
-require_once( dirname( __FILE__ ) . '/../Maintenance.php' );
+require_once __DIR__ . '/../Maintenance.php';
 
 class StorageTypeStats extends Maintenance {
 	function execute() {
-		$dbr = wfGetDB( DB_SLAVE );
+		$dbr = $this->getDB( DB_REPLICA );
 
 		$endId = $dbr->selectField( 'text', 'MAX(old_id)', false, __METHOD__ );
 		if ( !$endId ) {
@@ -18,7 +37,7 @@ class StorageTypeStats extends Maintenance {
 		}
 		echo "Using bin size of $binSize\n";
 
-		$stats = array();
+		$stats = [];
 
 		$classSql = <<<SQL
 			IF(old_flags LIKE '%external%',
@@ -45,17 +64,17 @@ SQL;
 			}
 			$res = $dbr->select(
 				'text',
-				array(
+				[
 					'old_flags',
 					"$classSql AS class",
 					'COUNT(*) as count',
-				),
-				array(
+				],
+				[
 					'old_id >= ' . intval( $rangeStart ),
 					'old_id < ' . intval( $rangeStart + $binSize )
-				),
+				],
 				__METHOD__,
-				array( 'GROUP BY' => 'old_flags, class' )
+				[ 'GROUP BY' => 'old_flags, class' ]
 			);
 
 			foreach ( $res as $row ) {
@@ -66,11 +85,11 @@ SQL;
 				$class = $row->class;
 				$count = $row->count;
 				if ( !isset( $stats[$flags][$class] ) ) {
-					$stats[$flags][$class] = array(
+					$stats[$flags][$class] = [
 						'count' => 0,
 						'first' => $rangeStart,
 						'last' => 0
-					);
+					];
 				}
 				$entry =& $stats[$flags][$class];
 				$entry['count'] += $count;
@@ -93,5 +112,4 @@ SQL;
 }
 
 $maintClass = 'StorageTypeStats';
-require_once( RUN_MAINTENANCE_IF_MAIN );
-
+require_once RUN_MAINTENANCE_IF_MAIN;

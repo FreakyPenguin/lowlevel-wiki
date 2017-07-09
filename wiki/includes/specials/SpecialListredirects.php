@@ -29,52 +29,120 @@
  * @ingroup SpecialPage
  */
 class ListredirectsPage extends QueryPage {
-
-	function getName() { return( 'Listredirects' ); }
-	function isExpensive() { return( true ); }
-	function isSyndicated() { return( false ); }
-	function sortDescending() { return( false ); }
-
-	function getSQL() {
-		$dbr = wfGetDB( DB_SLAVE );
-		$page = $dbr->tableName( 'page' );
-		$sql = "SELECT 'Listredirects' AS type, page_title AS title, page_namespace AS namespace, 
-			0 AS value FROM $page WHERE page_is_redirect = 1";
-		return( $sql );
+	function __construct( $name = 'Listredirects' ) {
+		parent::__construct( $name );
 	}
 
-	function formatResult( $skin, $result ) {
-		global $wgContLang;
+	public function isExpensive() {
+		return true;
+	}
 
+	function isSyndicated() {
+		return false;
+	}
+
+	function sortDescending() {
+		return false;
+	}
+
+	public function getQueryInfo() {
+		return [
+			'tables' => [ 'p1' => 'page', 'redirect', 'p2' => 'page' ],
+			'fields' => [ 'namespace' => 'p1.page_namespace',
+				'title' => 'p1.page_title',
+				'value' => 'p1.page_title',
+				'rd_namespace',
+				'rd_title',
+				'rd_fragment',
+				'rd_interwiki',
+				'redirid' => 'p2.page_id' ],
+			'conds' => [ 'p1.page_is_redirect' => 1 ],
+			'join_conds' => [ 'redirect' => [
+				'LEFT JOIN', 'rd_from=p1.page_id' ],
+				'p2' => [ 'LEFT JOIN', [
+					'p2.page_namespace=rd_namespace',
+					'p2.page_title=rd_title' ] ] ]
+		];
+	}
+
+	function getOrderFields() {
+		return [ 'p1.page_namespace', 'p1.page_title' ];
+	}
+
+	/**
+	 * Cache page existence for performance
+	 *
+	 * @param IDatabase $db
+	 * @param ResultWrapper $res
+	 */
+	function preprocessResults( $db, $res ) {
+		if ( !$res->numRows() ) {
+			return;
+		}
+
+		$batch = new LinkBatch;
+		foreach ( $res as $row ) {
+			$batch->add( $row->namespace, $row->title );
+			$redirTarget = $this->getRedirectTarget( $row );
+			if ( $redirTarget ) {
+				$batch->addObj( $redirTarget );
+			}
+		}
+		$batch->execute();
+
+		// Back to start for display
+		$res->seek( 0 );
+	}
+
+	/**
+	 * @param stdClass $row
+	 * @return Title|null
+	 */
+	protected function getRedirectTarget( $row ) {
+		if ( isset( $row->rd_title ) ) {
+			return Title::makeTitle( $row->rd_namespace,
+				$row->rd_title, $row->rd_fragment,
+				$row->rd_interwiki
+			);
+		} else {
+			$title = Title::makeTitle( $row->namespace, $row->title );
+			$article = WikiPage::factory( $title );
+
+			return $article->getRedirectTarget();
+		}
+	}
+
+	/**
+	 * @param Skin $skin
+	 * @param object $result Result row
+	 * @return string
+	 */
+	function formatResult( $skin, $result ) {
+		$linkRenderer = $this->getLinkRenderer();
 		# Make a link to the redirect itself
 		$rd_title = Title::makeTitle( $result->namespace, $result->title );
-		$rd_link = $skin->link(
+		$rd_link = $linkRenderer->makeLink(
 			$rd_title,
 			null,
-			array(),
-			array( 'redirect' => 'no' )
+			[],
+			[ 'redirect' => 'no' ]
 		);
 
 		# Find out where the redirect leads
-		$revision = Revision::newFromTitle( $rd_title );
-		if( $revision ) {
+		$target = $this->getRedirectTarget( $result );
+		if ( $target ) {
 			# Make a link to the destination page
-			$target = Title::newFromRedirect( $revision->getText() );
-			if( $target ) {
-				$arr = $wgContLang->getArrow() . $wgContLang->getDirMark();
-				$targetLink = $skin->link( $target );
-				return "$rd_link $arr $targetLink";
-			} else {
-				return "<del>$rd_link</del>";
-			}
+			$lang = $this->getLanguage();
+			$arr = $lang->getArrow() . $lang->getDirMark();
+			$targetLink = $linkRenderer->makeLink( $target );
+
+			return "$rd_link $arr $targetLink";
 		} else {
 			return "<del>$rd_link</del>";
 		}
 	}
-}
 
-function wfSpecialListredirects() {
-	list( $limit, $offset ) = wfCheckLimits();
-	$lrp = new ListredirectsPage();
-	$lrp->doQuery( $offset, $limit );
+	protected function getGroupName() {
+		return 'pages';
+	}
 }

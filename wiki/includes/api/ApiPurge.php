@@ -24,94 +24,183 @@
  *
  * @file
  */
-
-if ( !defined( 'MEDIAWIKI' ) ) {
-	require_once( 'ApiBase.php' );
-}
+use MediaWiki\Logger\LoggerFactory;
 
 /**
  * API interface for page purging
  * @ingroup API
  */
 class ApiPurge extends ApiBase {
-
-	public function __construct( $main, $action ) {
-		parent::__construct( $main, $action );
-	}
+	private $mPageSet;
 
 	/**
 	 * Purges the cache of a page
 	 */
 	public function execute() {
-		global $wgUser;
-		$params = $this->extractRequestParams();
-		if ( !$wgUser->isAllowed( 'purge' ) && !$this->getMain()->isInternalMode() &&
-				!$this->getMain()->getRequest()->wasPosted() ) {
-			$this->dieUsageMsg( array( 'mustbeposted', $this->getModuleName() ) );
+		$main = $this->getMain();
+		if ( !$main->isInternalMode() && !$main->getRequest()->wasPosted() ) {
+			$this->logFeatureUsage( 'purge-via-GET' );
+			$this->setWarning( 'Use of action=purge via GET is deprecated. Use POST instead.' );
 		}
-		$result = array();
-		foreach ( $params['titles'] as $t ) {
-			$r = array();
-			$title = Title::newFromText( $t );
-			if ( !$title instanceof Title ) {
-				$r['title'] = $t;
-				$r['invalid'] = '';
-				$result[] = $r;
-				continue;
-			}
+
+		$params = $this->extractRequestParams();
+
+		$continuationManager = new ApiContinuationManager( $this, [], [] );
+		$this->setContinuationManager( $continuationManager );
+
+		$forceLinkUpdate = $params['forcelinkupdate'];
+		$forceRecursiveLinkUpdate = $params['forcerecursivelinkupdate'];
+		$pageSet = $this->getPageSet();
+		$pageSet->execute();
+
+		$result = $pageSet->getInvalidTitlesAndRevisions();
+		$user = $this->getUser();
+
+		foreach ( $pageSet->getGoodTitles() as $title ) {
+			$r = [];
 			ApiQueryBase::addTitleInfo( $r, $title );
-			if ( !$title->exists() ) {
-				$r['missing'] = '';
-				$result[] = $r;
-				continue;
+			$page = WikiPage::factory( $title );
+			if ( !$user->pingLimiter( 'purge' ) ) {
+				$flags = WikiPage::PURGE_ALL;
+				if ( !$this->getRequest()->wasPosted() ) {
+					$flags ^= WikiPage::PURGE_GLOBAL_PCACHE; // skip DB_MASTER write
+				}
+				// Directly purge and skip the UI part of purge()
+				$page->doPurge( $flags );
+				$r['purged'] = true;
+			} else {
+				$error = $this->parseMsg( [ 'actionthrottledtext' ] );
+				$this->setWarning( $error['info'] );
 			}
-			$article = MediaWiki::articleFromTitle( $title );
-			$article->doPurge(); // Directly purge and skip the UI part of purge().
-			$r['purged'] = '';
+
+			if ( $forceLinkUpdate || $forceRecursiveLinkUpdate ) {
+				if ( !$user->pingLimiter( 'linkpurge' ) ) {
+					$popts = $page->makeParserOptions( 'canonical' );
+
+					# Parse content; note that HTML generation is only needed if we want to cache the result.
+					$content = $page->getContent( Revision::RAW );
+					if ( $content ) {
+						$enableParserCache = $this->getConfig()->get( 'EnableParserCache' );
+						$p_result = $content->getParserOutput(
+							$title,
+							$page->getLatest(),
+							$popts,
+							$enableParserCache
+						);
+
+						# Logging to better see expensive usage patterns
+						if ( $forceRecursiveLinkUpdate ) {
+							LoggerFactory::getInstance( 'RecursiveLinkPurge' )->info(
+								"Recursive link purge enqueued for {title}",
+								[
+									'user' => $this->getUser()->getName(),
+									'title' => $title->getPrefixedText()
+								]
+							);
+						}
+
+						# Update the links tables
+						$updates = $content->getSecondaryDataUpdates(
+							$title, null, $forceRecursiveLinkUpdate, $p_result );
+						foreach ( $updates as $update ) {
+							DeferredUpdates::addUpdate( $update, DeferredUpdates::PRESEND );
+						}
+
+						$r['linkupdate'] = true;
+
+						if ( $enableParserCache ) {
+							$pcache = ParserCache::singleton();
+							$pcache->save( $p_result, $page, $popts );
+						}
+					}
+				} else {
+					$error = $this->parseMsg( [ 'actionthrottledtext' ] );
+					$this->setWarning( $error['info'] );
+					$forceLinkUpdate = false;
+				}
+			}
+
 			$result[] = $r;
 		}
-		$this->getResult()->setIndexedTagName( $result, 'page' );
-		$this->getResult()->addValue( null, $this->getModuleName(), $result );
+		$apiResult = $this->getResult();
+		ApiResult::setIndexedTagName( $result, 'page' );
+		$apiResult->addValue( null, $this->getModuleName(), $result );
+
+		$values = $pageSet->getNormalizedTitlesAsResult( $apiResult );
+		if ( $values ) {
+			$apiResult->addValue( null, 'normalized', $values );
+		}
+		$values = $pageSet->getConvertedTitlesAsResult( $apiResult );
+		if ( $values ) {
+			$apiResult->addValue( null, 'converted', $values );
+		}
+		$values = $pageSet->getRedirectTitlesAsResult( $apiResult );
+		if ( $values ) {
+			$apiResult->addValue( null, 'redirects', $values );
+		}
+
+		$this->setContinuationManager( null );
+		$continuationManager->setContinuationIntoResult( $apiResult );
+	}
+
+	/**
+	 * Get a cached instance of an ApiPageSet object
+	 * @return ApiPageSet
+	 */
+	private function getPageSet() {
+		if ( !isset( $this->mPageSet ) ) {
+			$this->mPageSet = new ApiPageSet( $this );
+		}
+
+		return $this->mPageSet;
 	}
 
 	public function isWriteMode() {
 		return true;
 	}
 
-	public function getAllowedParams() {
-		return array(
-			'titles' => array(
-				ApiBase::PARAM_ISMULTI => true,
-				ApiBase::PARAM_REQUIRED => true
-			)
-		);
+	public function mustBePosted() {
+		// Anonymous users are not allowed a non-POST request
+		return !$this->getUser()->isAllowed( 'purge' );
 	}
 
-	public function getParamDescription() {
-		return array(
-			'titles' => 'A list of titles',
-		);
+	protected function getHelpFlags() {
+		$flags = parent::getHelpFlags();
+
+		// Claim that we must be posted for the purposes of help and paraminfo.
+		// @todo Remove this when self::mustBePosted() is updated for T145649
+		if ( !in_array( 'mustbeposted', $flags, true ) ) {
+			$flags[] = 'mustbeposted';
+		}
+
+		return $flags;
 	}
 
-	public function getDescription() {
-		return array( 'Purge the cache for the given titles.',
-			'This module requires a POST request if the user is not logged in.'
-		);
+	public function getAllowedParams( $flags = 0 ) {
+		$result = [
+			'forcelinkupdate' => false,
+			'forcerecursivelinkupdate' => false,
+			'continue' => [
+				ApiBase::PARAM_HELP_MSG => 'api-help-param-continue',
+			],
+		];
+		if ( $flags ) {
+			$result += $this->getPageSet()->getFinalParams( $flags );
+		}
+
+		return $result;
 	}
 
-	public function getPossibleErrors() {
-		return array_merge( parent::getPossibleErrors(), array(
-			array( 'cantpurge' ),
-		) );
+	protected function getExamplesMessages() {
+		return [
+			'action=purge&titles=Main_Page|API'
+				=> 'apihelp-purge-example-simple',
+			'action=purge&generator=allpages&gapnamespace=0&gaplimit=10'
+				=> 'apihelp-purge-example-generator',
+		];
 	}
 
-	protected function getExamples() {
-		return array(
-			'api.php?action=purge&titles=Main_Page|API'
-		);
-	}
-
-	public function getVersion() {
-		return __CLASS__ . ': $Id: ApiPurge.php 74944 2010-10-18 09:19:20Z catrope $';
+	public function getHelpUrls() {
+		return 'https://www.mediawiki.org/wiki/API:Purge';
 	}
 }

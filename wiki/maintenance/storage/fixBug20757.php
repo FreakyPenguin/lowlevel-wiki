@@ -1,23 +1,49 @@
 <?php
+/**
+ * Script to fix bug 20757.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * http://www.gnu.org/copyleft/gpl.html
+ *
+ * @file
+ * @ingroup Maintenance ExternalStorage
+ */
 
-require_once( dirname( __FILE__ ) . '/../Maintenance.php' );
+require_once __DIR__ . '/../Maintenance.php';
 
+/**
+ * Maintenance script to fix bug 20757.
+ *
+ * @ingroup Maintenance ExternalStorage
+ */
 class FixBug20757 extends Maintenance {
-	var $batchSize = 10000;
-	var $mapCache = array();
-	var $mapCacheSize = 0;
-	var $maxMapCacheSize = 1000000;
+	public $batchSize = 10000;
+	public $mapCache = [];
+	public $mapCacheSize = 0;
+	public $maxMapCacheSize = 1000000;
 
 	function __construct() {
 		parent::__construct();
-		$this->mDescription = 'Script to fix bug 20757 assuming that blob_tracking is intact';
+		$this->addDescription( 'Script to fix bug 20757 assuming that blob_tracking is intact' );
 		$this->addOption( 'dry-run', 'Report only' );
 		$this->addOption( 'start', 'old_id to start at', false, true );
 	}
 
 	function execute() {
-		$dbr = wfGetDB( DB_SLAVE );
-		$dbw = wfGetDB( DB_MASTER );
+		$dbr = $this->getDB( DB_REPLICA );
+		$dbw = $this->getDB( DB_MASTER );
 
 		$dryRun = $this->getOption( 'dry-run' );
 		if ( $dryRun ) {
@@ -31,40 +57,33 @@ class FixBug20757 extends Maintenance {
 
 		$totalRevs = $dbr->selectField( 'text', 'MAX(old_id)', false, __METHOD__ );
 
-		if ( $dbr->getType() == 'mysql'
-			&& version_compare( $dbr->getServerVersion(), '4.1.0', '>=' ) )
-		{
-			// In MySQL 4.1+, the binary field old_text has a non-working LOWER() function
-			$lowerLeft = 'LOWER(CONVERT(LEFT(old_text,22) USING latin1))';
-		} else {
-			// No CONVERT() in MySQL 4.0
-			$lowerLeft = 'LOWER(LEFT(old_text,22))';
-		}
+		// In MySQL 4.1+, the binary field old_text has a non-working LOWER() function
+		$lowerLeft = 'LOWER(CONVERT(LEFT(old_text,22) USING latin1))';
 
 		while ( true ) {
 			print "ID: $startId / $totalRevs\r";
 
 			$res = $dbr->select(
 				'text',
-				array( 'old_id', 'old_flags', 'old_text' ),
-				array(
+				[ 'old_id', 'old_flags', 'old_text' ],
+				[
 					'old_id > ' . intval( $startId ),
 					'old_flags LIKE \'%object%\' AND old_flags NOT LIKE \'%external%\'',
 					"$lowerLeft = 'o:15:\"historyblobstub\"'",
-				),
+				],
 				__METHOD__,
-				array(
+				[
 					'ORDER BY' => 'old_id',
 					'LIMIT' => $this->batchSize,
-				)
+				]
 			);
 
 			if ( !$res->numRows() ) {
 				break;
 			}
 
-			$secondaryIds = array();
-			$stubs = array();
+			$secondaryIds = [];
+			$stubs = [];
 
 			foreach ( $res as $row ) {
 				$startId = $row->old_id;
@@ -102,11 +121,11 @@ class FixBug20757 extends Maintenance {
 				// Queue the stub for future batch processing
 				$id = intval( $obj->mOldId );
 				$secondaryIds[] = $id;
-				$stubs[$row->old_id] = array(
+				$stubs[$row->old_id] = [
 					'legacyEncoding' => $legacyEncoding,
 					'secondaryId' => $id,
 					'hash' => $obj->mHash,
-				);
+				];
 			}
 
 			$secondaryIds = array_unique( $secondaryIds );
@@ -119,12 +138,12 @@ class FixBug20757 extends Maintenance {
 			$res = $dbr->select(
 				'blob_tracking',
 				'*',
-				array(
+				[
 					'bt_text_id' => $secondaryIds,
-				),
+				],
 				__METHOD__
 			);
-			$trackedBlobs = array();
+			$trackedBlobs = [];
 			foreach ( $res as $row ) {
 				$trackedBlobs[$row->bt_text_id] = $row;
 			}
@@ -136,8 +155,8 @@ class FixBug20757 extends Maintenance {
 					// No tracked blob. Work out what went wrong
 					$secondaryRow = $dbr->selectRow(
 						'text',
-						array( 'old_flags', 'old_text' ),
-						array( 'old_id' => $secondaryId ),
+						[ 'old_flags', 'old_text' ],
+						[ 'old_id' => $secondaryId ],
 						__METHOD__
 					);
 					if ( !$secondaryRow ) {
@@ -192,23 +211,23 @@ class FixBug20757 extends Maintenance {
 
 				if ( !$dryRun ) {
 					// Reset the text row to point to the original copy
-					$dbw->begin();
+					$this->beginTransaction( $dbw, __METHOD__ );
 					$dbw->update(
 						'text',
 						// SET
-						array(
+						[
 							'old_flags' => $newFlags,
 							'old_text' => $url
-						),
+						],
 						// WHERE
-						array( 'old_id' => $primaryId ),
+						[ 'old_id' => $primaryId ],
 						__METHOD__
 					);
 
 					// Add a blob_tracking row so that the new reference can be recompressed
 					// without needing to run trackBlobs.php again
 					$dbw->insert( 'blob_tracking',
-						array(
+						[
 							'bt_page' => $pageId,
 							'bt_rev_id' => $revId,
 							'bt_text_id' => $primaryId,
@@ -217,10 +236,10 @@ class FixBug20757 extends Maintenance {
 							'bt_cgz_hash' => $stub['hash'],
 							'bt_new_url' => null,
 							'bt_moved' => 0,
-						),
+						],
 						__METHOD__
 					);
-					$dbw->commit();
+					$this->commitTransaction( $dbw, __METHOD__ );
 					$this->waitForSlaves();
 				}
 
@@ -239,7 +258,7 @@ class FixBug20757 extends Maintenance {
 		static $iteration = 0;
 		++$iteration;
 		if ( ++$iteration > 50 == 0 ) {
-			wfWaitForSlaves( 5 );
+			wfWaitForSlaves();
 			$iteration = 0;
 		}
 	}
@@ -262,11 +281,11 @@ class FixBug20757 extends Maintenance {
 				unset( $this->mapCache[$key] );
 			}
 
-			$dbr = wfGetDB( DB_SLAVE );
-			$map = array();
+			$dbr = $this->getDB( DB_REPLICA );
+			$map = [];
 			$res = $dbr->select( 'revision',
-				array( 'rev_id', 'rev_text_id' ),
-				array( 'rev_page' => $pageId ),
+				[ 'rev_id', 'rev_text_id' ],
+				[ 'rev_page' => $pageId ],
 				__METHOD__
 			);
 			foreach ( $res as $row ) {
@@ -275,23 +294,30 @@ class FixBug20757 extends Maintenance {
 			$this->mapCache[$pageId] = $map;
 			$this->mapCacheSize += count( $map );
 		}
+
 		return $this->mapCache[$pageId];
 	}
 
 	/**
 	 * This is based on part of HistoryBlobStub::getText().
 	 * Determine if the text can be retrieved from the row in the normal way.
+	 * @param array $stub
+	 * @param stdClass $secondaryRow
+	 * @return bool
 	 */
 	function isUnbrokenStub( $stub, $secondaryRow ) {
 		$flags = explode( ',', $secondaryRow->old_flags );
 		$text = $secondaryRow->old_text;
 		if ( in_array( 'external', $flags ) ) {
 			$url = $text;
-			@list( /* $proto */ , $path ) = explode( '://', $url, 2 );
+			MediaWiki\suppressWarnings();
+			list( /* $proto */, $path ) = explode( '://', $url, 2 );
+			MediaWiki\restoreWarnings();
+
 			if ( $path == "" ) {
 				return false;
 			}
-			$text = ExternalStore::fetchFromUrl( $url );
+			$text = ExternalStore::fetchFromURL( $url );
 		}
 		if ( !in_array( 'object', $flags ) ) {
 			return false;
@@ -314,10 +340,10 @@ class FixBug20757 extends Maintenance {
 
 		$obj->uncompress();
 		$text = $obj->getItem( $stub['hash'] );
+
 		return $text !== false;
 	}
 }
 
 $maintClass = 'FixBug20757';
-require_once( RUN_MAINTENANCE_IF_MAIN );
-
+require_once RUN_MAINTENANCE_IF_MAIN;

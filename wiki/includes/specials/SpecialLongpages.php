@@ -26,23 +26,15 @@
  * @ingroup SpecialPage
  */
 class LongPagesPage extends ShortPagesPage {
-
-	function getName() {
-		return "Longpages";
+	function __construct( $name = 'Longpages' ) {
+		parent::__construct( $name );
 	}
 
 	function sortDescending() {
 		return true;
 	}
-}
 
-/**
- * constructor
- */
-function wfSpecialLongpages() {
-	list( $limit, $offset ) = wfCheckLimits();
-
-	$lpp = new LongPagesPage();
-
-	$lpp->doQuery( $offset, $limit );
+	protected function getGroupName() {
+		return 'maintenance';
+	}
 }
