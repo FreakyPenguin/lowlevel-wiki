@@ -1,0 +1,5 @@
+#!/bin/sh
+rm -rf /var/www/html/*
+cp -ar /wiki/* /var/www/html/
+chown -R www-data:www-data /var/www/html/
+exec docker-php-entrypoint "$@"
