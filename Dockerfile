@@ -3,7 +3,7 @@ RUN apk add --no-cache \
         freetype-dev \
         libjpeg-turbo-dev \
         libpng-dev
-RUN docker-php-ext-install -j4 mysql gd mbstring iconv opcache
+RUN docker-php-ext-install -j4 mysqli gd mbstring iconv opcache
 COPY php/php.ini /usr/local/etc/php/
 COPY php/docker-wiki-php-entrypoint /usr/local/bin/
 ENTRYPOINT ["docker-wiki-php-entrypoint"]
