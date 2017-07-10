@@ -147,3 +147,9 @@ $wgDnsBlacklistUrls = array('opm.tornevall.org.');
 #$wgReadOnly = 'Software Update';
 
 $wgShowExceptionDetails = true;
+
+# Use proper IPs from X-forwarded-for
+$wgUsePrivateIPs = true;
+$wgUseSquid = true;
+$wgSquidServersNoPurge = array();
+$wgSquidServersNoPurge[] = "172.16.0.0/12";
