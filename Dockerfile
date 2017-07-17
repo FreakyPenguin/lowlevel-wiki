@@ -8,5 +8,12 @@ COPY php/docker-wiki-php-entrypoint /usr/local/bin/
 COPY php/php.ini /usr/local/etc/php/
 ENTRYPOINT ["docker-wiki-php-entrypoint"]
 CMD ["php-fpm"]
+RUN apk add --no-cache wget \
+      && mkdir -p /wiki \
+      && cd /wiki \
+      && wget https://releases.wikimedia.org/mediawiki/1.29/mediawiki-1.29.0.tar.gz \
+      && tar xf mediawiki-1.29.0.tar.gz \
+      && mv mediawiki-1.29.0 w \
+      && rm mediawiki-1.29.0.tar.gz \
+      && apk del wget
 COPY root/ /wiki/
-COPY wiki/ /wiki/w
