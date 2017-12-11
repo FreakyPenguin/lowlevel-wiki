@@ -89,9 +89,9 @@ $wgDefaultSkin = 'monobook';
 ## License and Creative Commons licenses are supported so far.
 $wgEnableCreativeCommonsRdf = true;
 $wgRightsPage = ""; # Set to the title of a wiki page that describes your license/copyright
-$wgRightsUrl = "http://creativecommons.org/licenses/by-nc-sa/3.0/de/";
+$wgRightsUrl = "https://creativecommons.org/licenses/by-nc-sa/3.0/de/";
 $wgRightsText = "Namensnennung - Keine kommerzielle Nutzung - Weitergabe unter gleichen Bedingungen 3.0 Deutschland";
-$wgRightsIcon = "http://i.creativecommons.org/l/by-nc-sa/3.0/de/88x31.png";
+$wgRightsIcon = "https://i.creativecommons.org/l/by-nc-sa/3.0/de/88x31.png";
 # $wgRightsCode = "[license_code]"; # Not yet used
 
 $wgFavicon = '/Favicon.png'; 
