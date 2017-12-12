@@ -12,9 +12,9 @@ CMD ["php-fpm"]
 RUN apk add --no-cache wget \
       && mkdir -p /wiki \
       && cd /wiki \
-      && wget https://releases.wikimedia.org/mediawiki/1.29/mediawiki-1.29.2.tar.gz \
-      && tar xf mediawiki-1.29.2.tar.gz \
-      && mv mediawiki-1.29.2 w \
-      && rm mediawiki-1.29.2.tar.gz \
+      && wget https://releases.wikimedia.org/mediawiki/1.30/mediawiki-1.30.0.tar.gz \
+      && tar xf mediawiki-1.30.0.tar.gz \
+      && mv mediawiki-1.30.0 w \
+      && rm mediawiki-1.30.0.tar.gz \
       && apk del wget
 COPY root/ /wiki/
