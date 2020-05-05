@@ -1,2 +1,2 @@
-FROM antoineka/static-nginx:nossl
-COPY config/nginx.conf /config/nginx/nginx.conf
+FROM nginx:stable-alpine
+COPY config/nginx.conf /etc/nginx/nginx.conf
